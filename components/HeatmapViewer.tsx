@@ -25,12 +25,18 @@ export default function HeatmapViewer({
         const response = await fetch(`/api/heatmaps?pageUrl=${encodeURIComponent(pageUrl)}`)
         if (response.ok) {
           const data = await response.json()
-          if (data.heatmaps && data.heatmaps.length > 0) {
+          if (Array.isArray(data.heatmaps) && data.heatmaps.length > 0) {
             setHeatmapData(data.heatmaps[0])
+          } else {
+            setHeatmapData(null)
           }
+        } else {
+          console.error('Failed to fetch heatmap data:', response.status)
+          setHeatmapData(null)
         }
       } catch (error) {
         console.error('Failed to fetch heatmap data:', error)
+        setHeatmapData(null)
       } finally {
         setLoading(false)
       }
@@ -62,12 +68,12 @@ export default function HeatmapViewer({
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
     // Draw click heatmap
-    if (showClicks && heatmapData.metadata.click_data) {
+    if (showClicks && heatmapData.metadata?.click_data && Array.isArray(heatmapData.metadata.click_data)) {
       drawHeatPoints(ctx, heatmapData.metadata.click_data, 'rgba(255, 0, 0, 0.6)', canvas.width, canvas.height)
     }
 
     // Draw mouse movement heatmap
-    if (showMouse && heatmapData.metadata.mouse_data) {
+    if (showMouse && heatmapData.metadata?.mouse_data && Array.isArray(heatmapData.metadata.mouse_data)) {
       drawHeatPoints(ctx, heatmapData.metadata.mouse_data, 'rgba(0, 255, 0, 0.3)', canvas.width, canvas.height)
     }
   }
@@ -79,18 +85,19 @@ export default function HeatmapViewer({
     canvasWidth: number,
     canvasHeight: number
   ) => {
-    if (!points || points.length === 0) return
+    if (!Array.isArray(points) || points.length === 0) return
 
     // Find max count for normalization
-    const maxCount = Math.max(...points.map(p => p.count))
+    const maxCount = Math.max(...points.map(p => p.count || 0))
+    if (maxCount === 0) return
 
     points.forEach(point => {
-      const intensity = Math.min(point.count / maxCount, 1)
+      const intensity = Math.min((point.count || 0) / maxCount, 1)
       const radius = 20 + (intensity * 30) // Radius based on intensity
       
       // Scale coordinates to canvas size
-      const x = (point.x / 1920) * canvasWidth // Assume 1920px base width
-      const y = (point.y / 1080) * canvasHeight // Assume 1080px base height
+      const x = ((point.x || 0) / 1920) * canvasWidth // Assume 1920px base width
+      const y = ((point.y || 0) / 1080) * canvasHeight // Assume 1080px base height
 
       // Create radial gradient
       const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius)
@@ -144,6 +151,12 @@ export default function HeatmapViewer({
         </div>
       </div>
     )
+  }
+
+  const getTotalClicks = (heatmapData: HeatmapData): number => {
+    const clickData = heatmapData.metadata?.click_data
+    if (!Array.isArray(clickData)) return 0
+    return clickData.reduce((sum, point) => sum + (point.count || 0), 0)
   }
 
   return (
@@ -243,21 +256,21 @@ export default function HeatmapViewer({
         <div className="bg-card border border-border rounded-lg p-4">
           <div className="font-medium">Total Clicks</div>
           <div className="text-2xl font-bold text-red-500 mt-1">
-            {heatmapData.metadata.click_data?.reduce((sum, point) => sum + point.count, 0) || 0}
+            {getTotalClicks(heatmapData)}
           </div>
           <div className="text-muted-foreground">On this page</div>
         </div>
         <div className="bg-card border border-border rounded-lg p-4">
           <div className="font-medium">Sessions</div>
           <div className="text-2xl font-bold text-blue-500 mt-1">
-            {heatmapData.metadata.session_count || 0}
+            {heatmapData.metadata?.session_count || 0}
           </div>
           <div className="text-muted-foreground">Contributing to data</div>
         </div>
         <div className="bg-card border border-border rounded-lg p-4">
           <div className="font-medium">Last Updated</div>
           <div className="text-2xl font-bold text-green-500 mt-1">
-            {heatmapData.metadata.last_updated 
+            {heatmapData.metadata?.last_updated 
               ? new Date(heatmapData.metadata.last_updated).toLocaleDateString()
               : 'Never'
             }

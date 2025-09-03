@@ -12,6 +12,51 @@ function hasStatus(error: unknown): error is { status: number } {
   return typeof error === 'object' && error !== null && 'status' in error;
 }
 
+// Helper function to safely parse JSON strings from Cosmic metadata
+function safeJsonParse<T>(jsonString: string | T[], fallback: T[] = []): T[] {
+  if (Array.isArray(jsonString)) {
+    return jsonString;
+  }
+  
+  if (typeof jsonString === 'string') {
+    try {
+      const parsed = JSON.parse(jsonString);
+      return Array.isArray(parsed) ? parsed : fallback;
+    } catch (error) {
+      console.warn('Failed to parse JSON string:', jsonString);
+      return fallback;
+    }
+  }
+  
+  return fallback;
+}
+
+// Helper function to safely parse scroll data
+function safeScrollDataParse(scrollData: string | any): any {
+  if (typeof scrollData === 'object' && scrollData !== null) {
+    return scrollData;
+  }
+  
+  if (typeof scrollData === 'string') {
+    try {
+      return JSON.parse(scrollData);
+    } catch (error) {
+      console.warn('Failed to parse scroll data:', scrollData);
+      return {
+        max_scroll_percentage: 0,
+        avg_scroll_percentage: 0,
+        scroll_points: []
+      };
+    }
+  }
+  
+  return {
+    max_scroll_percentage: 0,
+    avg_scroll_percentage: 0,
+    scroll_points: []
+  };
+}
+
 // Session Management Functions
 export async function createSession(sessionData: {
   session_id: string;
@@ -32,7 +77,7 @@ export async function createSession(sessionData: {
         started_at: new Date().toISOString(),
         total_clicks: 0,
         total_scrolls: 0,
-        pages_visited: [window?.location?.pathname || '/']
+        pages_visited: ['/']
       }
     });
     
@@ -70,6 +115,10 @@ export async function getSessions(limit: number = 50): Promise<TrackingSession[]
       .props(['id', 'title', 'metadata', 'created_at'])
       .depth(1);
     
+    if (!response.objects || !Array.isArray(response.objects)) {
+      return [];
+    }
+
     const sessions = (response.objects as TrackingSession[]).sort((a, b) => {
       const dateA = new Date(a.created_at).getTime();
       const dateB = new Date(b.created_at).getTime();
@@ -81,7 +130,8 @@ export async function getSessions(limit: number = 50): Promise<TrackingSession[]
     if (hasStatus(error) && error.status === 404) {
       return [];
     }
-    throw new Error('Failed to fetch sessions');
+    console.error('Failed to fetch sessions:', error);
+    return [];
   }
 }
 
@@ -97,7 +147,8 @@ export async function getSession(sessionId: string): Promise<TrackingSession | n
     if (hasStatus(error) && error.status === 404) {
       return null;
     }
-    throw new Error('Failed to fetch session');
+    console.error('Failed to fetch session:', error);
+    return null;
   }
 }
 
@@ -135,16 +186,21 @@ export async function updateHeatmapData(
     const newScrollData = processScrollEvents(scrollEvents);
 
     if (existingHeatmap) {
+      // Parse existing data safely
+      const existingClickData = safeJsonParse<HeatPoint>(existingHeatmap.metadata.click_data, []);
+      const existingMouseData = safeJsonParse<HeatPoint>(existingHeatmap.metadata.mouse_data, []);
+      const existingScrollData = safeScrollDataParse(existingHeatmap.metadata.scroll_data);
+
       // Merge with existing data
-      const mergedClickData = mergeHeatmapPoints(existingHeatmap.metadata.click_data, newClickData);
-      const mergedMouseData = mergeHeatmapPoints(existingHeatmap.metadata.mouse_data, newMouseData);
-      const mergedScrollData = mergeScrollData(existingHeatmap.metadata.scroll_data, newScrollData);
+      const mergedClickData = mergeHeatmapPoints(existingClickData, newClickData);
+      const mergedMouseData = mergeHeatmapPoints(existingMouseData, newMouseData);
+      const mergedScrollData = mergeScrollData(existingScrollData, newScrollData);
 
       await cosmic.objects.updateOne(existingHeatmap.id, {
         metadata: {
-          click_data: mergedClickData,
-          mouse_data: mergedMouseData,
-          scroll_data: mergedScrollData,
+          click_data: JSON.stringify(mergedClickData),
+          mouse_data: JSON.stringify(mergedMouseData),
+          scroll_data: JSON.stringify(mergedScrollData),
           session_count: existingHeatmap.metadata.session_count + 1,
           last_updated: new Date().toISOString()
         }
@@ -157,9 +213,9 @@ export async function updateHeatmapData(
         metadata: {
           website_domain: websiteDomain,
           page_url: pageUrl,
-          click_data: newClickData,
-          mouse_data: newMouseData,
-          scroll_data: newScrollData,
+          click_data: JSON.stringify(newClickData),
+          mouse_data: JSON.stringify(newMouseData),
+          scroll_data: JSON.stringify(newScrollData),
           session_count: 1,
           last_updated: new Date().toISOString()
         }
@@ -189,12 +245,31 @@ export async function getHeatmapData(websiteDomain: string, pageUrl?: string): P
       .props(['id', 'title', 'metadata', 'created_at'])
       .depth(1);
     
-    return response.objects as HeatmapData[];
+    if (!response.objects || !Array.isArray(response.objects)) {
+      return [];
+    }
+
+    // Process the heatmap data to ensure proper parsing
+    const processedHeatmaps = response.objects.map((heatmap: any) => {
+      const processed = { ...heatmap };
+      
+      // Parse JSON strings in metadata
+      if (processed.metadata) {
+        processed.metadata.click_data = safeJsonParse<HeatPoint>(processed.metadata.click_data, []);
+        processed.metadata.mouse_data = safeJsonParse<HeatPoint>(processed.metadata.mouse_data, []);
+        processed.metadata.scroll_data = safeScrollDataParse(processed.metadata.scroll_data);
+      }
+      
+      return processed;
+    });
+    
+    return processedHeatmaps as HeatmapData[];
   } catch (error) {
     if (hasStatus(error) && error.status === 404) {
       return [];
     }
-    throw new Error('Failed to fetch heatmap data');
+    console.error('Failed to fetch heatmap data:', error);
+    return [];
   }
 }
 
@@ -207,7 +282,26 @@ export async function getWebsiteConfig(domain: string): Promise<WebsiteConfig | 
     }).depth(1);
     
     if (response.objects && response.objects.length > 0) {
-      return response.objects[0] as WebsiteConfig;
+      const config = response.objects[0] as WebsiteConfig;
+      
+      // Parse JSON strings in settings and analytics if they exist
+      if (typeof config.metadata.settings === 'string') {
+        try {
+          config.metadata.settings = JSON.parse(config.metadata.settings);
+        } catch (error) {
+          console.warn('Failed to parse settings JSON:', config.metadata.settings);
+        }
+      }
+      
+      if (typeof config.metadata.analytics === 'string') {
+        try {
+          config.metadata.analytics = JSON.parse(config.metadata.analytics);
+        } catch (error) {
+          console.warn('Failed to parse analytics JSON:', config.metadata.analytics);
+        }
+      }
+      
+      return config;
     }
     
     return null;
@@ -215,7 +309,8 @@ export async function getWebsiteConfig(domain: string): Promise<WebsiteConfig | 
     if (hasStatus(error) && error.status === 404) {
       return null;
     }
-    throw new Error('Failed to fetch website config');
+    console.error('Failed to fetch website config:', error);
+    return null;
   }
 }
 
@@ -228,19 +323,19 @@ export async function createWebsiteConfig(domain: string): Promise<WebsiteConfig
         domain: domain,
         api_key: generateApiKey(),
         user_id: 'default-user',
-        settings: {
+        settings: JSON.stringify({
           record_sessions: true,
           track_heatmaps: true,
           sample_rate: 100,
           max_session_duration: 1800000, // 30 minutes
           ignore_patterns: ['/api/*', '/admin/*']
-        },
-        analytics: {
+        }),
+        analytics: JSON.stringify({
           total_sessions: 0,
           total_page_views: 0,
           total_events: 0,
           last_activity: new Date().toISOString()
-        }
+        })
       }
     });
     
@@ -311,30 +406,37 @@ function mergeHeatmapPoints(existing: HeatPoint[], newPoints: HeatPoint[]): Heat
   const pointMap: Map<string, HeatPoint> = new Map();
   
   // Add existing points
-  existing.forEach(point => {
-    const key = `${point.x},${point.y}`;
-    pointMap.set(key, { ...point });
-  });
+  if (Array.isArray(existing)) {
+    existing.forEach(point => {
+      const key = `${point.x},${point.y}`;
+      pointMap.set(key, { ...point });
+    });
+  }
   
   // Merge new points
-  newPoints.forEach(point => {
-    const key = `${point.x},${point.y}`;
-    const existing = pointMap.get(key);
-    if (existing) {
-      existing.count += point.count;
-    } else {
-      pointMap.set(key, { ...point });
-    }
-  });
+  if (Array.isArray(newPoints)) {
+    newPoints.forEach(point => {
+      const key = `${point.x},${point.y}`;
+      const existingPoint = pointMap.get(key);
+      if (existingPoint) {
+        existingPoint.count += point.count;
+      } else {
+        pointMap.set(key, { ...point });
+      }
+    });
+  }
   
   return Array.from(pointMap.values());
 }
 
 function mergeScrollData(existing: any, newData: any) {
+  const existingData = existing || { max_scroll_percentage: 0, avg_scroll_percentage: 0, scroll_points: [] };
+  const newDataSafe = newData || { max_scroll_percentage: 0, avg_scroll_percentage: 0, scroll_points: [] };
+  
   return {
-    max_scroll_percentage: Math.max(existing.max_scroll_percentage, newData.max_scroll_percentage),
-    avg_scroll_percentage: (existing.avg_scroll_percentage + newData.avg_scroll_percentage) / 2,
-    scroll_points: [...existing.scroll_points, ...newData.scroll_points]
+    max_scroll_percentage: Math.max(existingData.max_scroll_percentage || 0, newDataSafe.max_scroll_percentage || 0),
+    avg_scroll_percentage: ((existingData.avg_scroll_percentage || 0) + (newDataSafe.avg_scroll_percentage || 0)) / 2,
+    scroll_points: [...(existingData.scroll_points || []), ...(newDataSafe.scroll_points || [])]
   };
 }
 

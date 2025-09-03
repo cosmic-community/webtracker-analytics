@@ -15,10 +15,16 @@ export default function HeatmapPreview() {
         const response = await fetch('/api/heatmaps?limit=3')
         if (response.ok) {
           const data = await response.json()
-          setHeatmaps(data.heatmaps || [])
+          // Ensure we have an array
+          const heatmapsArray = Array.isArray(data.heatmaps) ? data.heatmaps : []
+          setHeatmaps(heatmapsArray)
+        } else {
+          console.error('Failed to fetch heatmaps:', response.status, response.statusText)
+          setHeatmaps([])
         }
       } catch (error) {
         console.error('Failed to fetch heatmaps:', error)
+        setHeatmaps([])
       } finally {
         setLoading(false)
       }
@@ -28,11 +34,15 @@ export default function HeatmapPreview() {
   }, [])
 
   const getTotalClicks = (heatmap: HeatmapData): number => {
-    return heatmap.metadata.click_data?.reduce((sum, point) => sum + point.count, 0) || 0
+    const clickData = heatmap.metadata?.click_data
+    if (!Array.isArray(clickData)) return 0
+    return clickData.reduce((sum, point) => sum + (point.count || 0), 0)
   }
 
   const getHotspotCount = (heatmap: HeatmapData): number => {
-    return heatmap.metadata.click_data?.filter(point => point.count > 5).length || 0
+    const clickData = heatmap.metadata?.click_data
+    if (!Array.isArray(clickData)) return 0
+    return clickData.filter(point => (point.count || 0) > 5).length
   }
 
   if (loading) {
@@ -84,28 +94,30 @@ export default function HeatmapPreview() {
           <div className="relative h-32 bg-gradient-to-br from-muted/30 to-muted/10 rounded-lg mb-4 overflow-hidden">
             {/* Simulated heatmap visualization */}
             <div className="absolute inset-0 opacity-60">
-              {heatmap.metadata.click_data?.slice(0, 8).map((point, index) => {
-                const intensity = Math.min(point.count / 10, 1)
-                const size = 8 + (intensity * 16)
-                return (
-                  <div
-                    key={index}
-                    className="absolute rounded-full"
-                    style={{
-                      left: `${Math.min(point.x / 1920 * 100, 85)}%`,
-                      top: `${Math.min(point.y / 1080 * 100, 75)}%`,
-                      width: `${size}px`,
-                      height: `${size}px`,
-                      background: `radial-gradient(circle, rgba(255,0,0,${intensity * 0.8}) 0%, rgba(255,0,0,${intensity * 0.4}) 50%, transparent 100%)`
-                    }}
-                  />
-                )
-              })}
+              {Array.isArray(heatmap.metadata?.click_data) && 
+                heatmap.metadata.click_data.slice(0, 8).map((point, index) => {
+                  const intensity = Math.min((point.count || 0) / 10, 1)
+                  const size = 8 + (intensity * 16)
+                  return (
+                    <div
+                      key={index}
+                      className="absolute rounded-full"
+                      style={{
+                        left: `${Math.min((point.x || 0) / 1920 * 100, 85)}%`,
+                        top: `${Math.min((point.y || 0) / 1080 * 100, 75)}%`,
+                        width: `${size}px`,
+                        height: `${size}px`,
+                        background: `radial-gradient(circle, rgba(255,0,0,${intensity * 0.8}) 0%, rgba(255,0,0,${intensity * 0.4}) 50%, transparent 100%)`
+                      }}
+                    />
+                  )
+                })
+              }
             </div>
             
             {/* Page overlay */}
             <div className="absolute bottom-2 left-2 text-xs bg-black/70 text-white px-2 py-1 rounded">
-              {heatmap.metadata.page_url}
+              {heatmap.metadata?.page_url || '/'}
             </div>
           </div>
 
@@ -113,11 +125,19 @@ export default function HeatmapPreview() {
           <div className="space-y-3">
             <div>
               <h3 className="font-medium group-hover:text-primary transition-colors">
-                {heatmap.metadata.page_url === '/' ? 'Homepage' : heatmap.metadata.page_url}
+                {(heatmap.metadata?.page_url === '/' || !heatmap.metadata?.page_url) 
+                  ? 'Homepage' 
+                  : heatmap.metadata.page_url
+                }
               </h3>
               <p className="text-sm text-muted-foreground">
-                {heatmap.metadata.session_count} session{heatmap.metadata.session_count !== 1 ? 's' : ''} • 
-                Last updated {new Date(heatmap.metadata.last_updated).toLocaleDateString()}
+                {heatmap.metadata?.session_count || 0} session
+                {(heatmap.metadata?.session_count || 0) !== 1 ? 's' : ''} • 
+                Last updated {
+                  heatmap.metadata?.last_updated 
+                    ? new Date(heatmap.metadata.last_updated).toLocaleDateString()
+                    : 'Never'
+                }
               </p>
             </div>
 
@@ -139,7 +159,7 @@ export default function HeatmapPreview() {
             </div>
 
             <Link 
-              href={`/heatmaps?page=${encodeURIComponent(heatmap.metadata.page_url)}`}
+              href={`/heatmaps?page=${encodeURIComponent(heatmap.metadata?.page_url || '/')}`}
               className="block text-center text-sm text-primary hover:text-primary/80 font-medium"
             >
               View Full Heatmap →
