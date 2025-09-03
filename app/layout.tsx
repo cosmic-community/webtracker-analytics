@@ -6,8 +6,11 @@ import TrackingProvider from '@/components/TrackingProvider'
 const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'WebTracker Analytics',
-  description: 'Advanced web analytics and user behavior tracking',
+  title: 'WebTracker Analytics - Real-time User Behavior Analytics',
+  description: 'Comprehensive user behavior tracking with heatmaps, session recordings, and real-time analytics.',
+  keywords: 'web analytics, heatmaps, session recording, user tracking, website analytics',
+  authors: [{ name: 'WebTracker Analytics' }],
+  viewport: 'width=device-width, initial-scale=1',
 }
 
 export default function RootLayout({
@@ -21,9 +24,6 @@ export default function RootLayout({
         <TrackingProvider>
           {children}
         </TrackingProvider>
-        
-        {/* WebTracker Script */}
-        <script src="/webtracker.js" async></script>
       </body>
     </html>
   )
