@@ -13,7 +13,11 @@ function hasStatus(error: unknown): error is { status: number } {
 }
 
 // Helper function to safely parse JSON strings from Cosmic metadata
-function safeJsonParse<T>(jsonString: string | T[], fallback: T[] = []): T[] {
+function safeJsonParse<T>(jsonString: string | T[] | undefined, fallback: T[] = []): T[] {
+  if (!jsonString) {
+    return fallback;
+  }
+  
   if (Array.isArray(jsonString)) {
     return jsonString;
   }
@@ -23,7 +27,7 @@ function safeJsonParse<T>(jsonString: string | T[], fallback: T[] = []): T[] {
       const parsed = JSON.parse(jsonString);
       return Array.isArray(parsed) ? parsed : fallback;
     } catch (error) {
-      console.warn('Failed to parse JSON string:', jsonString);
+      console.warn('Failed to parse JSON string:', jsonString.substring(0, 100) + '...');
       return fallback;
     }
   }
@@ -32,7 +36,15 @@ function safeJsonParse<T>(jsonString: string | T[], fallback: T[] = []): T[] {
 }
 
 // Helper function to safely parse scroll data
-function safeScrollDataParse(scrollData: string | any): any {
+function safeScrollDataParse(scrollData: string | any | undefined): any {
+  if (!scrollData) {
+    return {
+      max_scroll_percentage: 0,
+      avg_scroll_percentage: 0,
+      scroll_points: []
+    };
+  }
+  
   if (typeof scrollData === 'object' && scrollData !== null) {
     return scrollData;
   }
@@ -41,7 +53,7 @@ function safeScrollDataParse(scrollData: string | any): any {
     try {
       return JSON.parse(scrollData);
     } catch (error) {
-      console.warn('Failed to parse scroll data:', scrollData);
+      console.warn('Failed to parse scroll data:', scrollData.substring(0, 100));
       return {
         max_scroll_percentage: 0,
         avg_scroll_percentage: 0,
@@ -201,7 +213,7 @@ export async function updateHeatmapData(
           click_data: JSON.stringify(mergedClickData),
           mouse_data: JSON.stringify(mergedMouseData),
           scroll_data: JSON.stringify(mergedScrollData),
-          session_count: existingHeatmap.metadata.session_count + 1,
+          session_count: (existingHeatmap.metadata.session_count || 0) + 1,
           last_updated: new Date().toISOString()
         }
       });
@@ -232,9 +244,13 @@ export async function updateHeatmapData(
 export async function getHeatmapData(websiteDomain: string, pageUrl?: string): Promise<HeatmapData[]> {
   try {
     const query: Record<string, any> = {
-      type: 'heatmap-data',
-      'metadata.website_domain': websiteDomain
+      type: 'heatmap-data'
     };
+
+    // Only filter by domain if provided - allows fetching all heatmaps
+    if (websiteDomain) {
+      query['metadata.website_domain'] = websiteDomain;
+    }
 
     if (pageUrl) {
       query['metadata.page_url'] = pageUrl;
@@ -255,15 +271,26 @@ export async function getHeatmapData(websiteDomain: string, pageUrl?: string): P
       
       // Parse JSON strings in metadata
       if (processed.metadata) {
+        // Handle click_data and mouse_data parsing
         processed.metadata.click_data = safeJsonParse<HeatPoint>(processed.metadata.click_data, []);
         processed.metadata.mouse_data = safeJsonParse<HeatPoint>(processed.metadata.mouse_data, []);
         processed.metadata.scroll_data = safeScrollDataParse(processed.metadata.scroll_data);
+        
+        // Ensure session_count is a number
+        processed.metadata.session_count = Number(processed.metadata.session_count) || 0;
       }
       
       return processed;
     });
     
-    return processedHeatmaps as HeatmapData[];
+    // Sort by last_updated (newest first)
+    const sortedHeatmaps = processedHeatmaps.sort((a, b) => {
+      const dateA = new Date(a.metadata?.last_updated || '').getTime();
+      const dateB = new Date(b.metadata?.last_updated || '').getTime();
+      return dateB - dateA;
+    });
+    
+    return sortedHeatmaps as HeatmapData[];
   } catch (error) {
     if (hasStatus(error) && error.status === 404) {
       return [];
@@ -352,9 +379,9 @@ function processEventsForHeatmap(events: TrackingEvent[]): HeatPoint[] {
   
   events.forEach(event => {
     if (event.x !== undefined && event.y !== undefined) {
-      // Round coordinates to nearest 10px for clustering
-      const roundedX = Math.round(event.x / 10) * 10;
-      const roundedY = Math.round(event.y / 10) * 10;
+      // Round coordinates to nearest 20px for better clustering
+      const roundedX = Math.round(event.x / 20) * 20;
+      const roundedY = Math.round(event.y / 20) * 20;
       const key = `${roundedX},${roundedY}`;
       
       const existing = pointMap.get(key);
@@ -384,13 +411,13 @@ function processScrollEvents(events: TrackingEvent[]) {
   }
 
   const scrollPercentages = events
-    .filter(e => e.scrollTop !== undefined && e.pageHeight !== undefined)
+    .filter(e => e.scrollTop !== undefined && e.pageHeight !== undefined && e.pageHeight > 0)
     .map(e => {
       const scrollPercent = ((e.scrollTop || 0) / (e.pageHeight || 1)) * 100;
       return Math.min(100, Math.max(0, scrollPercent));
     });
 
-  const maxScroll = Math.max(...scrollPercentages, 0);
+  const maxScroll = scrollPercentages.length > 0 ? Math.max(...scrollPercentages) : 0;
   const avgScroll = scrollPercentages.length > 0 
     ? scrollPercentages.reduce((a, b) => a + b, 0) / scrollPercentages.length 
     : 0;
@@ -408,20 +435,24 @@ function mergeHeatmapPoints(existing: HeatPoint[], newPoints: HeatPoint[]): Heat
   // Add existing points
   if (Array.isArray(existing)) {
     existing.forEach(point => {
-      const key = `${point.x},${point.y}`;
-      pointMap.set(key, { ...point });
+      if (point && typeof point.x === 'number' && typeof point.y === 'number') {
+        const key = `${point.x},${point.y}`;
+        pointMap.set(key, { ...point });
+      }
     });
   }
   
   // Merge new points
   if (Array.isArray(newPoints)) {
     newPoints.forEach(point => {
-      const key = `${point.x},${point.y}`;
-      const existingPoint = pointMap.get(key);
-      if (existingPoint) {
-        existingPoint.count += point.count;
-      } else {
-        pointMap.set(key, { ...point });
+      if (point && typeof point.x === 'number' && typeof point.y === 'number') {
+        const key = `${point.x},${point.y}`;
+        const existingPoint = pointMap.get(key);
+        if (existingPoint) {
+          existingPoint.count += point.count;
+        } else {
+          pointMap.set(key, { ...point });
+        }
       }
     });
   }

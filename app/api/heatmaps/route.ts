@@ -7,9 +7,9 @@ export async function GET(request: NextRequest) {
     const { searchParams } = new URL(request.url)
     const pageUrl = searchParams.get('pageUrl')
     const limit = parseInt(searchParams.get('limit') || '10')
-    const websiteDomain = 'localhost:3000' // In production, get from request header
-
-    const heatmaps = await getHeatmapData(websiteDomain, pageUrl || undefined)
+    
+    // Get all heatmaps or filter by pageUrl
+    const heatmaps = await getHeatmapData('', pageUrl || undefined)
 
     return NextResponse.json({
       heatmaps: heatmaps.slice(0, limit),

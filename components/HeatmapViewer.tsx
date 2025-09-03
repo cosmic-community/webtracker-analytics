@@ -16,15 +16,21 @@ export default function HeatmapViewer({
 }: HeatmapViewerProps) {
   const [heatmapData, setHeatmapData] = useState<HeatmapData | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const containerRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const fetchHeatmapData = async () => {
       try {
+        setLoading(true)
+        setError(null)
+        
         const response = await fetch(`/api/heatmaps?pageUrl=${encodeURIComponent(pageUrl)}`)
         if (response.ok) {
           const data = await response.json()
+          console.log('Fetched heatmap data:', data) // Debug log
+          
           if (Array.isArray(data.heatmaps) && data.heatmaps.length > 0) {
             setHeatmapData(data.heatmaps[0])
           } else {
@@ -32,10 +38,12 @@ export default function HeatmapViewer({
           }
         } else {
           console.error('Failed to fetch heatmap data:', response.status)
+          setError(`Failed to fetch heatmap data: ${response.status}`)
           setHeatmapData(null)
         }
       } catch (error) {
         console.error('Failed to fetch heatmap data:', error)
+        setError('Network error while fetching heatmap data')
         setHeatmapData(null)
       } finally {
         setLoading(false)
@@ -61,20 +69,31 @@ export default function HeatmapViewer({
 
     // Set canvas size to match container
     const rect = container.getBoundingClientRect()
-    canvas.width = rect.width
-    canvas.height = rect.height * 2 // Make it taller for demo
+    const dpr = window.devicePixelRatio || 1
+    
+    canvas.width = rect.width * dpr
+    canvas.height = rect.height * dpr
+    canvas.style.width = rect.width + 'px'
+    canvas.style.height = rect.height + 'px'
+    
+    ctx.scale(dpr, dpr)
 
     // Clear canvas
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.clearRect(0, 0, rect.width, rect.height)
+
+    console.log('Drawing heatmap with data:', {
+      clicks: heatmapData.metadata?.click_data?.length || 0,
+      mouse: heatmapData.metadata?.mouse_data?.length || 0
+    })
 
     // Draw click heatmap
     if (showClicks && heatmapData.metadata?.click_data && Array.isArray(heatmapData.metadata.click_data)) {
-      drawHeatPoints(ctx, heatmapData.metadata.click_data, 'rgba(255, 0, 0, 0.6)', canvas.width, canvas.height)
+      drawHeatPoints(ctx, heatmapData.metadata.click_data, 'rgba(255, 0, 0, 0.6)', rect.width, rect.height)
     }
 
     // Draw mouse movement heatmap
     if (showMouse && heatmapData.metadata?.mouse_data && Array.isArray(heatmapData.metadata.mouse_data)) {
-      drawHeatPoints(ctx, heatmapData.metadata.mouse_data, 'rgba(0, 255, 0, 0.3)', canvas.width, canvas.height)
+      drawHeatPoints(ctx, heatmapData.metadata.mouse_data, 'rgba(0, 255, 0, 0.3)', rect.width, rect.height)
     }
   }
 
@@ -85,19 +104,26 @@ export default function HeatmapViewer({
     canvasWidth: number,
     canvasHeight: number
   ) => {
-    if (!Array.isArray(points) || points.length === 0) return
+    if (!Array.isArray(points) || points.length === 0) {
+      console.log('No points to draw:', points)
+      return
+    }
 
     // Find max count for normalization
     const maxCount = Math.max(...points.map(p => p.count || 0))
     if (maxCount === 0) return
 
+    console.log('Drawing', points.length, 'points with max count:', maxCount)
+
     points.forEach(point => {
-      const intensity = Math.min((point.count || 0) / maxCount, 1)
-      const radius = 20 + (intensity * 30) // Radius based on intensity
+      if (!point || typeof point.x !== 'number' || typeof point.y !== 'number') return
       
-      // Scale coordinates to canvas size
-      const x = ((point.x || 0) / 1920) * canvasWidth // Assume 1920px base width
-      const y = ((point.y || 0) / 1080) * canvasHeight // Assume 1080px base height
+      const intensity = Math.min((point.count || 0) / maxCount, 1)
+      const radius = 15 + (intensity * 25) // Radius based on intensity
+      
+      // Scale coordinates to canvas size (assuming points are from a 1440x900 viewport)
+      const x = (point.x / 1440) * canvasWidth
+      const y = (point.y / 900) * canvasHeight
 
       // Create radial gradient
       const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius)
@@ -116,12 +142,32 @@ export default function HeatmapViewer({
     return (
       <div className="bg-muted/20 rounded-lg p-8 min-h-[600px] flex items-center justify-center">
         <div className="text-center space-y-4">
-          <div className="loading-shimmer w-16 h-16 rounded-full mx-auto"></div>
+          <div className="w-16 h-16 border-4 border-primary/20 border-t-primary rounded-full animate-spin mx-auto"></div>
           <div>
             <div className="font-medium">Loading heatmap data...</div>
             <div className="text-sm text-muted-foreground mt-1">
               Analyzing user interaction patterns
             </div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-8 min-h-[600px] flex items-center justify-center">
+        <div className="text-center space-y-4 max-w-md">
+          <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto">
+            <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <div>
+            <h3 className="font-medium text-red-800">Error Loading Heatmap</h3>
+            <p className="text-sm text-red-600 mt-1">
+              {error}
+            </p>
           </div>
         </div>
       </div>
@@ -159,6 +205,12 @@ export default function HeatmapViewer({
     return clickData.reduce((sum, point) => sum + (point.count || 0), 0)
   }
 
+  const getTotalMouseMovements = (heatmapData: HeatmapData): number => {
+    const mouseData = heatmapData.metadata?.mouse_data
+    if (!Array.isArray(mouseData)) return 0
+    return mouseData.reduce((sum, point) => sum + (point.count || 0), 0)
+  }
+
   return (
     <div className="relative">
       {/* Heatmap Controls */}
@@ -168,21 +220,21 @@ export default function HeatmapViewer({
           <input 
             type="checkbox" 
             checked={showClicks}
-            onChange={(e) => setHeatmapData(prev => prev ? {...prev} : null)} // Trigger re-render
+            onChange={() => {}} // Trigger re-render
             className="rounded border-border"
           />
           <div className="w-3 h-3 bg-red-500 rounded-full"></div>
-          Click Heatmap
+          Click Heatmap ({getTotalClicks(heatmapData)} clicks)
         </label>
         <label className="flex items-center gap-2 text-sm">
           <input 
             type="checkbox" 
             checked={showMouse}
-            onChange={(e) => setHeatmapData(prev => prev ? {...prev} : null)} // Trigger re-render
+            onChange={() => {}} // Trigger re-render
             className="rounded border-border"
           />
           <div className="w-3 h-3 bg-green-500/60 rounded-full"></div>
-          Mouse Movement
+          Mouse Movement ({getTotalMouseMovements(heatmapData)} movements)
         </label>
       </div>
 
@@ -194,12 +246,12 @@ export default function HeatmapViewer({
       >
         <canvas
           ref={canvasRef}
-          className="absolute inset-0 pointer-events-none"
+          className="absolute inset-0 pointer-events-none z-10"
           style={{ mixBlendMode: 'multiply' }}
         />
         
         {/* Sample webpage content for demonstration */}
-        <div className="p-8 space-y-8 text-gray-900">
+        <div className="p-8 space-y-8 text-gray-900 relative z-0">
           <header className="text-center space-y-4">
             <h1 className="text-4xl font-bold">Sample Webpage</h1>
             <p className="text-xl text-gray-600 max-w-2xl mx-auto">
@@ -269,7 +321,7 @@ export default function HeatmapViewer({
         </div>
         <div className="bg-card border border-border rounded-lg p-4">
           <div className="font-medium">Last Updated</div>
-          <div className="text-2xl font-bold text-green-500 mt-1">
+          <div className="text-sm font-medium text-green-500 mt-1">
             {heatmapData.metadata?.last_updated 
               ? new Date(heatmapData.metadata.last_updated).toLocaleDateString()
               : 'Never'
