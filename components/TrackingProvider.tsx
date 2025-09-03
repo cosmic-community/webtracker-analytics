@@ -171,7 +171,7 @@ export default function TrackingProvider({ children }: { children: React.ReactNo
     if (!sessionId || events.length === 0) return
 
     try {
-      const pages = [...new Set(events.map(e => new URL(e.url).pathname))]
+      const pages = [...Array.from(new Set(events.map(e => new URL(e.url).pathname)))]
       const clickCount = events.filter(e => e.type === 'click').length
       const scrollCount = events.filter(e => e.type === 'scroll').length
       const duration = Date.now() - sessionStartTime

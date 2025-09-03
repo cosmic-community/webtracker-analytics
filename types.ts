@@ -146,7 +146,7 @@ export function isWebsiteConfig(obj: CosmicObject): obj is WebsiteConfig {
   return obj.type === 'website-configs';
 }
 
-// Utility types
+// Utility types for API operations
 export type CreateSessionData = Omit<TrackingSession, 'id' | 'created_at' | 'modified_at'>;
 export type UpdateHeatmapData = Partial<HeatmapData['metadata']>;
 
@@ -161,7 +161,5 @@ export type {
   ScrollData,
   CosmicResponse,
   SessionStats,
-  DashboardData,
-  CreateSessionData,
-  UpdateHeatmapData
+  DashboardData
 };

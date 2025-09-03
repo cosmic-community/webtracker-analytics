@@ -12,16 +12,16 @@ export async function GET(request: NextRequest) {
     
     // Calculate statistics
     const totalSessions = sessionObjects.length
-    const totalClicks = sessionObjects.reduce((sum, session) => {
+    const totalClicks = sessionObjects.reduce((sum: number, session: any) => {
       return sum + (session.metadata?.total_clicks || 0)
     }, 0)
     
     const durations = sessionObjects
-      .filter(session => session.metadata?.duration)
-      .map(session => session.metadata.duration)
+      .filter((session: any) => session.metadata?.duration)
+      .map((session: any) => session.metadata.duration)
     
     const averageDurationMs = durations.length > 0 
-      ? durations.reduce((sum, duration) => sum + duration, 0) / durations.length
+      ? durations.reduce((sum: number, duration: number) => sum + duration, 0) / durations.length
       : 0
 
     const averageDuration = formatDuration(averageDurationMs)

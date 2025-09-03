@@ -12,7 +12,7 @@ export async function GET(request: NextRequest) {
       .props(['id', 'title', 'metadata', 'created_at'])
       .depth(1)
 
-    const sortedSessions = sessions.objects.sort((a, b) => {
+    const sortedSessions = sessions.objects.sort((a: any, b: any) => {
       const dateA = new Date(a.created_at).getTime()
       const dateB = new Date(b.created_at).getTime()
       return dateB - dateA
