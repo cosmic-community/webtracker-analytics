@@ -1,18 +1,13 @@
 import type { Metadata } from 'next'
+import { Inter } from 'next/font/google'
 import './globals.css'
 import TrackingProvider from '@/components/TrackingProvider'
-import CosmicBadge from '@/components/CosmicBadge'
+
+const inter = Inter({ subsets: ['latin'] })
 
 export const metadata: Metadata = {
-  title: 'WebTracker Analytics - Session Recording & Heatmaps',
-  description: 'A powerful web analytics platform with session recording and heatmap visualization, similar to Hotjar. Built with Next.js and Cosmic CMS.',
-  keywords: 'analytics, session recording, heatmaps, user tracking, web analytics, hotjar alternative',
-  authors: [{ name: 'WebTracker Analytics' }],
-  openGraph: {
-    title: 'WebTracker Analytics - Session Recording & Heatmaps',
-    description: 'Understand your users with powerful session recording and heatmap analytics',
-    type: 'website',
-  },
+  title: 'WebTracker Analytics',
+  description: 'Advanced web analytics and user behavior tracking',
 }
 
 export default function RootLayout({
@@ -20,19 +15,15 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  // Get bucket slug for the cosmic badge
-  const bucketSlug = process.env.COSMIC_BUCKET_SLUG as string
-
   return (
     <html lang="en">
-      <head>
-        <script src="/dashboard-console-capture.js"></script>
-      </head>
-      <body className="font-sans antialiased">
+      <body className={inter.className}>
         <TrackingProvider>
           {children}
-          <CosmicBadge bucketSlug={bucketSlug} />
         </TrackingProvider>
+        
+        {/* WebTracker Script */}
+        <script src="/webtracker.js" async></script>
       </body>
     </html>
   )
