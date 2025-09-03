@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useEffect, useRef, useCallback } from 'react'
-import { Play, Pause, SkipBack, SkipForward, RotateCcw, Square } from 'lucide-react'
+import { useEffect, useState, useRef } from 'react'
+import { Play, Pause, RotateCcw, FastForward, Rewind, MousePointer, Eye, Clock } from 'lucide-react'
 import type { TrackingSession, TrackingEvent } from '@/types'
 
 interface SessionPlayerProps {
@@ -12,414 +12,376 @@ export default function SessionPlayer({ session }: SessionPlayerProps) {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState(0)
   const [playbackSpeed, setPlaybackSpeed] = useState(1)
-  const canvasRef = useRef<HTMLCanvasElement>(null)
-  const timelineRef = useRef<HTMLDivElement>(null)
-  const animationRef = useRef<number>()
-  const startTimeRef = useRef<number>(0)
-  const pausedTimeRef = useRef<number>(0)
-
-  const events = Array.isArray(session.metadata.events) ? session.metadata.events : []
-  const sessionDuration = session.metadata.duration || (events.length > 0 ? Math.max(...events.map(e => e.timestamp)) - Math.min(...events.map(e => e.timestamp)) : 0)
+  const [cursorPosition, setCursorPosition] = useState({ x: 0, y: 0 })
+  const [currentEvent, setCurrentEvent] = useState<TrackingEvent | null>(null)
+  const [viewportSize, setViewportSize] = useState({ width: 1920, height: 1080 })
   
-  // Normalize event timestamps to start from 0
-  const normalizeTimestamp = useCallback((timestamp: number): number => {
-    if (events.length === 0) return 0
-    const firstTimestamp = Math.min(...events.map(e => e.timestamp))
-    return timestamp - firstTimestamp
-  }, [events])
+  const playerRef = useRef<HTMLDivElement>(null)
+  const intervalRef = useRef<NodeJS.Timeout>()
+  const timelineRef = useRef<HTMLDivElement>(null)
 
-  const getCurrentEvents = useCallback((time: number): TrackingEvent[] => {
-    if (events.length === 0) return []
-    
-    return events.filter(event => {
-      const normalizedTime = normalizeTimestamp(event.timestamp)
-      return normalizedTime <= time
-    })
-  }, [events, normalizeTimestamp])
+  // Get events and duration
+  const events = Array.isArray(session.metadata.events) ? session.metadata.events : []
+  const duration = session.metadata.duration || 0
+  const totalEvents = events.length
 
-  const drawCanvas = useCallback((time: number) => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    // Set canvas size
-    canvas.width = 1200
-    canvas.height = 800
-
-    // Clear canvas
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-
-    // Draw webpage mockup background
-    ctx.fillStyle = '#f8f9fa'
-    ctx.fillRect(0, 0, canvas.width, 80) // Header
-    ctx.fillStyle = '#e9ecef'
-    ctx.fillRect(0, 80, canvas.width, 2) // Border
-
-    // Draw content areas
-    ctx.fillStyle = '#f8f9fa'
-    ctx.fillRect(50, 120, canvas.width - 100, 200) // Main content
-    ctx.fillStyle = '#e9ecef'
-    ctx.strokeRect(50, 120, canvas.width - 100, 200)
-
-    // Draw sidebar
-    ctx.fillStyle = '#f8f9fa'
-    ctx.fillRect(50, 340, 300, canvas.height - 380)
-    ctx.fillStyle = '#e9ecef'
-    ctx.strokeRect(50, 340, 300, canvas.height - 380)
-
-    // Get events up to current time
-    const currentEvents = getCurrentEvents(time)
-    
-    // Draw mouse trail
-    const mouseEvents = currentEvents
-      .filter(e => e.type === 'mousemove' && e.x !== undefined && e.y !== undefined)
-      .slice(-10) // Show last 10 mouse positions for trail effect
-
-    if (mouseEvents.length > 1) {
-      ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)'
-      ctx.lineWidth = 2
-      ctx.beginPath()
-      
-      mouseEvents.forEach((event, index) => {
-        const x = (event.x! / 1920) * canvas.width // Scale to canvas
-        const y = (event.y! / 1080) * canvas.height
-        
-        if (index === 0) {
-          ctx.moveTo(x, y)
-        } else {
-          ctx.lineTo(x, y)
-        }
-      })
-      
-      ctx.stroke()
-    }
-
-    // Draw current mouse position
-    const lastMouseEvent = mouseEvents[mouseEvents.length - 1]
-    if (lastMouseEvent && lastMouseEvent.x !== undefined && lastMouseEvent.y !== undefined) {
-      const x = (lastMouseEvent.x / 1920) * canvas.width
-      const y = (lastMouseEvent.y / 1080) * canvas.height
-      
-      // Mouse cursor
-      ctx.fillStyle = '#3b82f6'
-      ctx.beginPath()
-      ctx.arc(x, y, 8, 0, Math.PI * 2)
-      ctx.fill()
-      
-      // Cursor pointer shape
-      ctx.fillStyle = '#ffffff'
-      ctx.beginPath()
-      ctx.moveTo(x - 3, y - 3)
-      ctx.lineTo(x + 3, y)
-      ctx.lineTo(x, y + 3)
-      ctx.fill()
-    }
-
-    // Draw click events
-    const clickEvents = currentEvents.filter(e => e.type === 'click' && e.x !== undefined && e.y !== undefined)
-    clickEvents.forEach((event, index) => {
-      if (event.x === undefined || event.y === undefined) return
-      
-      const x = (event.x / 1920) * canvas.width
-      const y = (event.y / 1080) * canvas.height
-      const eventTime = normalizeTimestamp(event.timestamp)
-      const timeSinceClick = time - eventTime
-      
-      if (timeSinceClick < 1000) { // Show click animation for 1 second
-        const progress = timeSinceClick / 1000
-        const radius = 20 * (1 - progress)
-        const opacity = 1 - progress
-        
-        // Click ripple effect
-        ctx.strokeStyle = `rgba(239, 68, 68, ${opacity})`
-        ctx.lineWidth = 3
-        ctx.beginPath()
-        ctx.arc(x, y, radius, 0, Math.PI * 2)
-        ctx.stroke()
-        
-        // Click dot
-        ctx.fillStyle = `rgba(239, 68, 68, ${opacity})`
-        ctx.beginPath()
-        ctx.arc(x, y, 4, 0, Math.PI * 2)
-        ctx.fill()
-      }
-    })
-
-    // Draw scroll indicator
-    const scrollEvents = currentEvents.filter(e => e.type === 'scroll')
-    if (scrollEvents.length > 0) {
-      const lastScroll = scrollEvents[scrollEvents.length - 1]
-      if (lastScroll.scrollTop !== undefined && lastScroll.pageHeight !== undefined) {
-        const scrollPercent = (lastScroll.scrollTop / lastScroll.pageHeight) * 100
-        const scrollY = Math.min(scrollPercent / 100 * (canvas.height - 100), canvas.height - 100)
-        
-        // Scroll indicator
-        ctx.fillStyle = '#10b981'
-        ctx.fillRect(canvas.width - 20, scrollY, 10, 20)
-        
-        // Scroll percentage text
-        ctx.fillStyle = '#374151'
-        ctx.font = '12px monospace'
-        ctx.fillText(`${Math.round(scrollPercent)}%`, canvas.width - 60, scrollY + 15)
-      }
-    }
-
-    // Draw timestamp
-    ctx.fillStyle = '#374151'
-    ctx.font = '14px monospace'
-    ctx.fillText(`${formatTime(time)} / ${formatTime(sessionDuration)}`, 20, 30)
-    
-    // Draw current event info
-    const recentEvent = currentEvents[currentEvents.length - 1]
-    if (recentEvent) {
-      ctx.fillStyle = '#6b7280'
-      ctx.font = '12px sans-serif'
-      ctx.fillText(`Last action: ${recentEvent.type}`, 20, 50)
-    }
-  }, [getCurrentEvents, normalizeTimestamp, sessionDuration])
-
-  const formatTime = (ms: number): string => {
-    const seconds = Math.floor(ms / 1000)
-    const minutes = Math.floor(seconds / 60)
-    return `${minutes}:${(seconds % 60).toString().padStart(2, '0')}`
-  }
-
-  const animate = useCallback(() => {
-    if (!isPlaying) return
-
-    const now = Date.now()
-    const elapsed = (now - startTimeRef.current + pausedTimeRef.current) * playbackSpeed
-    const newTime = Math.min(elapsed, sessionDuration)
-    
-    setCurrentTime(newTime)
-    drawCanvas(newTime)
-    
-    if (newTime < sessionDuration) {
-      animationRef.current = requestAnimationFrame(animate)
-    } else {
-      setIsPlaying(false)
-    }
-  }, [isPlaying, playbackSpeed, sessionDuration, drawCanvas])
+  // Get scroll events for timeline visualization
+  const scrollEvents = events.filter(e => e.type === 'scroll')
+  const clickEvents = events.filter(e => e.type === 'click')
+  const mouseMoveEvents = events.filter(e => e.type === 'mousemove')
 
   useEffect(() => {
-    if (isPlaying) {
-      startTimeRef.current = Date.now()
-      animationRef.current = requestAnimationFrame(animate)
-    } else if (animationRef.current) {
-      cancelAnimationFrame(animationRef.current)
-      pausedTimeRef.current = currentTime
+    if (isPlaying && duration > 0) {
+      intervalRef.current = setInterval(() => {
+        setCurrentTime(prev => {
+          const newTime = prev + (100 * playbackSpeed)
+          if (newTime >= duration) {
+            setIsPlaying(false)
+            return duration
+          }
+          return newTime
+        })
+      }, 100)
+    } else {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
+      }
     }
 
     return () => {
-      if (animationRef.current) {
-        cancelAnimationFrame(animationRef.current)
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current)
       }
     }
-  }, [isPlaying, animate, currentTime])
+  }, [isPlaying, playbackSpeed, duration])
 
+  // Update current event and cursor position based on timeline
   useEffect(() => {
-    drawCanvas(currentTime)
-  }, [currentTime, drawCanvas])
+    const startTime = new Date(session.metadata.started_at).getTime()
+    const targetTime = startTime + currentTime
 
-  const handlePlay = () => {
-    if (currentTime >= sessionDuration) {
-      setCurrentTime(0)
-      pausedTimeRef.current = 0
+    // Find the most recent event at or before current time
+    let relevantEvent: TrackingEvent | null = null
+    
+    for (const event of events) {
+      if (event.timestamp <= targetTime) {
+        relevantEvent = event
+      } else {
+        break
+      }
     }
+
+    if (relevantEvent && relevantEvent !== currentEvent) {
+      setCurrentEvent(relevantEvent)
+      
+      // Update cursor position for mouse events
+      if ((relevantEvent.type === 'mousemove' || relevantEvent.type === 'click') && 
+          relevantEvent.x !== undefined && relevantEvent.y !== undefined) {
+        setCursorPosition({ x: relevantEvent.x, y: relevantEvent.y })
+      }
+
+      // Update viewport size for resize events
+      if (relevantEvent.type === 'resize' || (relevantEvent.windowWidth && relevantEvent.windowHeight)) {
+        setViewportSize({
+          width: relevantEvent.windowWidth || 1920,
+          height: relevantEvent.windowHeight || 1080
+        })
+      }
+    }
+  }, [currentTime, events, session.metadata.started_at, currentEvent])
+
+  const handlePlayPause = () => {
     setIsPlaying(!isPlaying)
   }
 
   const handleRestart = () => {
     setCurrentTime(0)
-    pausedTimeRef.current = 0
     setIsPlaying(false)
-    drawCanvas(0)
+    setCursorPosition({ x: 0, y: 0 })
+    setCurrentEvent(null)
   }
 
-  const handleTimelineClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!timelineRef.current) return
-    
-    const rect = timelineRef.current.getBoundingClientRect()
-    const clickX = e.clientX - rect.left
-    const percentage = clickX / rect.width
-    const newTime = percentage * sessionDuration
-    
-    setCurrentTime(newTime)
-    pausedTimeRef.current = newTime
-    drawCanvas(newTime)
+  const handleSpeedChange = (speed: number) => {
+    setPlaybackSpeed(speed)
   }
 
-  const handleSkip = (direction: 'forward' | 'back') => {
-    const skipAmount = 5000 // 5 seconds
-    const newTime = direction === 'forward' 
-      ? Math.min(currentTime + skipAmount, sessionDuration)
-      : Math.max(currentTime - skipAmount, 0)
-    
-    setCurrentTime(newTime)
-    pausedTimeRef.current = newTime
-    drawCanvas(newTime)
+  const handleTimelineClick = (event: React.MouseEvent<HTMLDivElement>) => {
+    if (timelineRef.current && duration > 0) {
+      const rect = timelineRef.current.getBoundingClientRect()
+      const clickX = event.clientX - rect.left
+      const percentage = clickX / rect.width
+      const newTime = percentage * duration
+      setCurrentTime(Math.max(0, Math.min(newTime, duration)))
+    }
   }
 
-  if (events.length === 0) {
-    return (
-      <div className="bg-muted/20 rounded-lg p-8 min-h-[500px] flex items-center justify-center">
-        <div className="text-center space-y-4">
-          <div className="w-16 h-16 bg-muted/50 rounded-full flex items-center justify-center mx-auto">
-            <Play className="w-8 h-8 text-muted-foreground" />
-          </div>
-          <div>
-            <h3 className="font-medium">No Recording Data</h3>
-            <p className="text-sm text-muted-foreground mt-1">
-              This session doesn't contain any recorded events to playback.
-            </p>
-          </div>
-        </div>
-      </div>
-    )
+  const formatTime = (milliseconds: number): string => {
+    const seconds = Math.floor(milliseconds / 1000)
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = seconds % 60
+    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+  }
+
+  const formatDuration = (ms: number): string => {
+    if (ms < 1000) return `${ms}ms`
+    if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`
+    const minutes = Math.floor(ms / 60000)
+    const seconds = Math.floor((ms % 60000) / 1000)
+    return `${minutes}m ${seconds}s`
+  }
+
+  // Calculate scroll percentage safely
+  const getScrollPercentage = (): number => {
+    const lastScroll = scrollEvents[scrollEvents.length - 1]
+    if (!lastScroll || lastScroll.scrollTop === undefined || lastScroll.pageHeight === undefined) {
+      return 0
+    }
+    
+    const scrollTop = lastScroll.scrollTop
+    const pageHeight = lastScroll.pageHeight
+    const windowHeight = lastScroll.windowHeight || 1080
+    
+    if (pageHeight <= windowHeight) return 0
+    return Math.min(100, Math.max(0, (scrollTop / (pageHeight - windowHeight)) * 100))
   }
 
   return (
-    <div className="space-y-4">
-      {/* Player Canvas */}
-      <div className="relative bg-white border border-border rounded-lg overflow-hidden">
-        <canvas
-          ref={canvasRef}
-          className="w-full h-auto max-h-[500px]"
-          style={{ aspectRatio: '1200/800' }}
-        />
-        
-        {/* Play overlay (shown when not playing) */}
-        {!isPlaying && currentTime === 0 && (
-          <div className="absolute inset-0 bg-black/20 flex items-center justify-center">
-            <button
-              onClick={handlePlay}
-              className="w-16 h-16 bg-primary text-white rounded-full flex items-center justify-center hover:bg-primary/90 transition-colors"
-            >
-              <Play className="w-8 h-8 ml-1" />
-            </button>
+    <div className="bg-card border border-border rounded-lg overflow-hidden">
+      {/* Player Header */}
+      <div className="p-4 border-b border-border bg-muted/20">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="font-semibold">Session Recording</h3>
+            <div className="flex items-center gap-4 text-sm text-muted-foreground mt-1">
+              <span className="flex items-center gap-1">
+                <Clock className="w-3 h-3" />
+                {formatDuration(duration)}
+              </span>
+              <span className="flex items-center gap-1">
+                <MousePointer className="w-3 h-3" />
+                {totalEvents} events
+              </span>
+              <span className="flex items-center gap-1">
+                <Eye className="w-3 h-3" />
+                {session.metadata.pages_visited?.length || 0} pages
+              </span>
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="text-sm text-muted-foreground">
+              Session ID: {session.metadata.session_id}
+            </div>
+            <div className="text-xs text-muted-foreground">
+              {new Date(session.metadata.started_at).toLocaleString()}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Player Viewport */}
+      <div 
+        ref={playerRef}
+        className="relative bg-white overflow-hidden"
+        style={{ 
+          height: '400px',
+          aspectRatio: `${viewportSize.width} / ${viewportSize.height}`
+        }}
+      >
+        {/* Simulated webpage content */}
+        <div className="absolute inset-0 bg-gradient-to-br from-gray-50 to-gray-100 p-8">
+          <div className="max-w-4xl mx-auto space-y-6">
+            <header className="text-center space-y-4">
+              <h1 className="text-3xl font-bold text-gray-900">Sample Website</h1>
+              <p className="text-gray-600">Recorded user session playback</p>
+              <div className="flex gap-3 justify-center">
+                <div className="bg-blue-500 text-white px-4 py-2 rounded text-sm">
+                  Button 1
+                </div>
+                <div className="bg-gray-300 text-gray-700 px-4 py-2 rounded text-sm">
+                  Button 2
+                </div>
+              </div>
+            </header>
+            
+            <div className="grid md:grid-cols-3 gap-4">
+              <div className="bg-white p-4 rounded shadow-sm">
+                <h3 className="font-medium mb-2">Feature 1</h3>
+                <p className="text-sm text-gray-600">Content area 1</p>
+              </div>
+              <div className="bg-white p-4 rounded shadow-sm">
+                <h3 className="font-medium mb-2">Feature 2</h3>
+                <p className="text-sm text-gray-600">Content area 2</p>
+              </div>
+              <div className="bg-white p-4 rounded shadow-sm">
+                <h3 className="font-medium mb-2">Feature 3</h3>
+                <p className="text-sm text-gray-600">Content area 3</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Mouse cursor */}
+        {currentEvent && (currentEvent.type === 'mousemove' || currentEvent.type === 'click') && (
+          <div
+            className="absolute pointer-events-none transition-all duration-100 ease-linear z-50"
+            style={{
+              left: `${(cursorPosition.x / viewportSize.width) * 100}%`,
+              top: `${(cursorPosition.y / viewportSize.height) * 100}%`,
+              transform: 'translate(-50%, -50%)'
+            }}
+          >
+            {currentEvent.type === 'click' ? (
+              <div className="relative">
+                <MousePointer className="w-5 h-5 text-blue-500 drop-shadow-lg" />
+                <div className="absolute -top-1 -left-1 w-7 h-7 border-2 border-red-500 rounded-full animate-ping" />
+              </div>
+            ) : (
+              <MousePointer className="w-5 h-5 text-blue-500 drop-shadow-lg" />
+            )}
+          </div>
+        )}
+
+        {/* Scroll indicator */}
+        {scrollEvents.length > 0 && (
+          <div className="absolute right-2 top-2 bottom-2 w-2 bg-gray-200 rounded">
+            <div 
+              className="w-full bg-blue-500 rounded transition-all duration-200"
+              style={{ height: `${getScrollPercentage()}%` }}
+            />
+          </div>
+        )}
+
+        {/* Event indicator */}
+        {currentEvent && (
+          <div className="absolute top-2 left-2 bg-black/80 text-white text-xs px-2 py-1 rounded">
+            {currentEvent.type} - {new Date(currentEvent.timestamp).toLocaleTimeString()}
           </div>
         )}
       </div>
 
-      {/* Player Controls */}
-      <div className="bg-muted/30 rounded-lg p-4 space-y-4">
-        {/* Timeline */}
-        <div className="space-y-2">
-          <div
+      {/* Timeline */}
+      <div className="p-4 border-t border-border">
+        <div className="space-y-3">
+          {/* Progress bar */}
+          <div 
             ref={timelineRef}
-            className="relative h-2 bg-muted rounded-full cursor-pointer"
+            className="relative h-2 bg-muted rounded cursor-pointer"
             onClick={handleTimelineClick}
           >
-            <div
-              className="absolute top-0 left-0 h-full bg-primary rounded-full transition-all"
-              style={{ width: `${sessionDuration > 0 ? (currentTime / sessionDuration) * 100 : 0}%` }}
+            <div 
+              className="absolute left-0 top-0 h-full bg-primary rounded transition-all duration-100"
+              style={{ width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%' }}
             />
             
             {/* Event markers */}
             {events.map((event, index) => {
-              const normalizedTime = normalizeTimestamp(event.timestamp)
-              const position = sessionDuration > 0 ? (normalizedTime / sessionDuration) * 100 : 0
+              const startTime = new Date(session.metadata.started_at).getTime()
+              const eventTime = event.timestamp - startTime
+              const position = duration > 0 ? (eventTime / duration) * 100 : 0
+              
+              let markerColor = 'bg-gray-400'
+              if (event.type === 'click') markerColor = 'bg-red-500'
+              else if (event.type === 'scroll') markerColor = 'bg-blue-500'
+              else if (event.type === 'mousemove') markerColor = 'bg-green-500'
               
               return (
                 <div
-                  key={event.id || index}
-                  className="absolute top-0 w-1 h-full transform -translate-x-0.5"
-                  style={{ left: `${position}%` }}
-                >
-                  <div className={`w-full h-full ${
-                    event.type === 'click' ? 'bg-red-400' :
-                    event.type === 'scroll' ? 'bg-blue-400' :
-                    event.type === 'mousemove' ? 'bg-green-400' :
-                    'bg-gray-400'
-                  }`} />
-                </div>
+                  key={`${event.id}-${index}`}
+                  className={`absolute top-0 w-1 h-full ${markerColor} opacity-60`}
+                  style={{ left: `${Math.min(98, Math.max(0, position))}%` }}
+                />
               )
             })}
           </div>
-          
-          <div className="flex justify-between text-xs text-muted-foreground">
-            <span>{formatTime(currentTime)}</span>
-            <span>{formatTime(sessionDuration)}</span>
-          </div>
-        </div>
 
-        {/* Control Buttons */}
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <button
-              onClick={handleRestart}
-              className="btn-secondary inline-flex items-center gap-2 px-3 py-2"
-            >
-              <RotateCcw className="w-4 h-4" />
-              Restart
-            </button>
-            
-            <button
-              onClick={() => handleSkip('back')}
-              className="btn-secondary p-2"
-            >
-              <SkipBack className="w-4 h-4" />
-            </button>
-            
-            <button
-              onClick={handlePlay}
-              className="btn-primary inline-flex items-center gap-2 px-4 py-2"
-            >
-              {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-              {isPlaying ? 'Pause' : 'Play'}
-            </button>
-            
-            <button
-              onClick={() => handleSkip('forward')}
-              className="btn-secondary p-2"
-            >
-              <SkipForward className="w-4 h-4" />
-            </button>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="flex items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Speed:</span>
-              <select
-                value={playbackSpeed}
-                onChange={(e) => setPlaybackSpeed(Number(e.target.value))}
-                className="bg-background border border-border rounded px-2 py-1 text-sm"
+          {/* Controls */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleRestart}
+                className="p-2 hover:bg-muted rounded transition-colors"
+                title="Restart"
               >
-                <option value={0.25}>0.25x</option>
-                <option value={0.5}>0.5x</option>
-                <option value={1}>1x</option>
-                <option value={2}>2x</option>
-                <option value={4}>4x</option>
-              </select>
+                <RotateCcw className="w-4 h-4" />
+              </button>
+              
+              <button
+                onClick={() => setCurrentTime(Math.max(0, currentTime - 5000))}
+                className="p-2 hover:bg-muted rounded transition-colors"
+                title="Rewind 5s"
+              >
+                <Rewind className="w-4 h-4" />
+              </button>
+              
+              <button
+                onClick={handlePlayPause}
+                className="p-2 hover:bg-muted rounded transition-colors"
+                title={isPlaying ? 'Pause' : 'Play'}
+              >
+                {isPlaying ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
+              </button>
+              
+              <button
+                onClick={() => setCurrentTime(Math.min(duration, currentTime + 5000))}
+                className="p-2 hover:bg-muted rounded transition-colors"
+                title="Fast forward 5s"
+              >
+                <FastForward className="w-4 h-4" />
+              </button>
             </div>
-            
-            <div className="text-sm text-muted-foreground">
-              {events.length} events
+
+            <div className="flex items-center gap-4">
+              {/* Speed control */}
+              <div className="flex items-center gap-1">
+                <span className="text-sm text-muted-foreground">Speed:</span>
+                <select
+                  value={playbackSpeed}
+                  onChange={(e) => handleSpeedChange(Number(e.target.value))}
+                  className="bg-background border border-border rounded px-2 py-1 text-sm"
+                >
+                  <option value={0.5}>0.5x</option>
+                  <option value={1}>1x</option>
+                  <option value={2}>2x</option>
+                  <option value={4}>4x</option>
+                </select>
+              </div>
+
+              {/* Time display */}
+              <div className="text-sm text-muted-foreground font-mono">
+                {formatTime(currentTime)} / {formatTime(duration)}
+              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* Event Legend */}
-      <div className="flex items-center justify-center gap-6 text-sm">
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-red-400 rounded-full"></div>
-          <span>Clicks</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-blue-400 rounded-full"></div>
-          <span>Scrolls</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-green-400 rounded-full"></div>
-          <span>Mouse Movement</span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="w-3 h-3 bg-blue-500 rounded-full"></div>
-          <span>Mouse Position</span>
+      {/* Session Statistics */}
+      <div className="p-4 border-t border-border bg-muted/20">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+          <div>
+            <div className="text-muted-foreground">Clicks</div>
+            <div className="font-semibold text-red-500">
+              {clickEvents.length}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Mouse Moves</div>
+            <div className="font-semibold text-green-500">
+              {mouseMoveEvents.length}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Scrolls</div>
+            <div className="font-semibold text-blue-500">
+              {scrollEvents.length}
+            </div>
+          </div>
+          <div>
+            <div className="text-muted-foreground">Max Scroll</div>
+            <div className="font-semibold text-purple-500">
+              {getScrollPercentage().toFixed(0)}%
+            </div>
+          </div>
         </div>
       </div>
     </div>
