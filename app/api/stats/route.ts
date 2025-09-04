@@ -1,199 +1,182 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { cosmic, getSessions, getHeatmapData } from '@/lib/cosmic'
-import type { TrackingSession, HeatmapData } from '@/types'
+import { getSessions, getHeatmapData } from '@/lib/cosmic'
 
 export async function GET(request: NextRequest) {
   try {
     const { searchParams } = new URL(request.url)
-    const domain = searchParams.get('domain') || 'localhost:3000'
-    const period = searchParams.get('period') || '7d' // 24h, 7d, 30d
-
-    // Get sessions and heatmap data
-    const sessions = await getSessions(1000) // Get more data for stats
-    const heatmaps = await getHeatmapData('') // Get all heatmaps
-
-    // Calculate time range
-    const now = new Date()
-    let startDate = new Date()
+    const limit = parseInt(searchParams.get('limit') || '50')
     
-    switch (period) {
-      case '24h':
-        startDate.setHours(now.getHours() - 24)
-        break
-      case '30d':
-        startDate.setDate(now.getDate() - 30)
-        break
-      case '7d':
-      default:
-        startDate.setDate(now.getDate() - 7)
-        break
-    }
-
-    // Filter sessions by time period
-    const filteredSessions = sessions.filter(session => {
-      const sessionDate = new Date(session.created_at)
-      return sessionDate >= startDate && sessionDate <= now
-    })
+    // Fetch sessions and heatmaps
+    const [sessions, heatmaps] = await Promise.all([
+      getSessions(limit),
+      getHeatmapData('') // Empty string to get all heatmaps
+    ])
 
     // Calculate basic stats
-    const totalSessions = filteredSessions.length
-    const totalPageViews = filteredSessions.reduce((sum, session) => 
-      sum + (session.metadata.page_views || 0), 0)
-    const totalEvents = filteredSessions.reduce((sum, session) => 
-      sum + (Array.isArray(session.metadata.events) ? session.metadata.events.length : 0), 0)
+    const totalSessions = sessions.length
+    const totalPageViews = sessions.reduce((sum, session) => 
+      sum + (session.metadata?.page_views || 0), 0
+    )
+
+    // Calculate average duration
+    const durationsWithValues = sessions
+      .map(s => s.metadata?.duration || 0)
+      .filter(d => d > 0)
     
-    const averageDuration = filteredSessions.length > 0 
-      ? filteredSessions.reduce((sum, session) => sum + (session.metadata.duration || 0), 0) / filteredSessions.length
+    const averageDuration = durationsWithValues.length > 0 
+      ? Math.round(durationsWithValues.reduce((sum, d) => sum + d, 0) / durationsWithValues.length)
       : 0
 
-    // Calculate bounce rate (sessions with only 1 page view)
-    const bouncedSessions = filteredSessions.filter(session => 
-      (session.metadata.page_views || 0) <= 1).length
-    const bounceRate = totalSessions > 0 ? (bouncedSessions / totalSessions) * 100 : 0
-
-    // Get top pages
-    const pageViews: Record<string, number> = {}
-    filteredSessions.forEach(session => {
-      if (Array.isArray(session.metadata.pages_visited)) {
-        session.metadata.pages_visited.forEach(page => {
-          pageViews[page] = (pageViews[page] || 0) + 1
+    // Calculate top pages
+    const pageViewCounts: Record<string, number> = {}
+    sessions.forEach(session => {
+      const pages = session.metadata?.pages_visited || []
+      if (Array.isArray(pages)) {
+        pages.forEach(page => {
+          if (typeof page === 'string') {
+            pageViewCounts[page] = (pageViewCounts[page] || 0) + 1
+          }
         })
       }
     })
 
-    const topPages = Object.entries(pageViews)
-      .sort(([,a], [,b]) => b - a)
-      .slice(0, 5)
+    const topPages = Object.entries(pageViewCounts)
       .map(([url, views]) => ({ url, views }))
+      .sort((a, b) => b.views - a.views)
+      .slice(0, 5)
 
-    // Device type analysis
-    const deviceTypes: Record<string, number> = {
-      Mobile: 0,
-      Tablet: 0, 
+    // Calculate bounce rate (sessions with only 1 page view)
+    const singlePageSessions = sessions.filter(s => (s.metadata?.page_views || 0) <= 1).length
+    const bounceRate = totalSessions > 0 ? Math.round((singlePageSessions / totalSessions) * 100) : 0
+
+    // Device type analysis with proper undefined checks
+    const deviceTypes = {
       Desktop: 0,
+      Mobile: 0,
+      Tablet: 0,
       Other: 0
     }
 
-    filteredSessions.forEach(session => {
-      const userAgent = session.metadata.user_agent || ''
-      
-      if (/Mobile|Android|iPhone|iPad/.test(userAgent)) {
-        if (/iPad/.test(userAgent)) {
-          deviceTypes.Tablet += 1
-        } else {
-          deviceTypes.Mobile += 1
-        }
-      } else if (/Tablet/.test(userAgent)) {
+    sessions.forEach(session => {
+      const userAgent = session.metadata?.user_agent || ''
+      if (userAgent.includes('Mobile')) {
+        deviceTypes.Mobile += 1
+      } else if (userAgent.includes('iPad') || userAgent.includes('Tablet')) {
         deviceTypes.Tablet += 1
-      } else if (/Windows|Mac|Linux/.test(userAgent)) {
+      } else if (userAgent.includes('Mozilla') && !userAgent.includes('Mobile')) {
         deviceTypes.Desktop += 1
       } else {
         deviceTypes.Other += 1
       }
     })
 
-    // FIXED: Add null checks for deviceTypes properties to resolve TS18048 errors
-    const deviceStats = [
-      { name: 'Mobile', value: deviceTypes.Mobile || 0, color: '#3B82F6' },
-      { name: 'Tablet', value: deviceTypes.Tablet || 0, color: '#10B981' },
-      { name: 'Desktop', value: deviceTypes.Desktop || 0, color: '#F59E0B' },
-      { name: 'Other', value: deviceTypes.Other || 0, color: '#EF4444' }
-    ]
-
-    // Sessions over time (daily breakdown)
-    const sessionsOverTime: Record<string, number> = {}
-    for (let d = new Date(startDate); d <= now; d.setDate(d.getDate() + 1)) {
-      const dateKey = d.toISOString().split('T')[0]
-      sessionsOverTime[dateKey] = 0
+    // Calculate device percentages with proper undefined checks
+    const devicePercentages = {
+      Desktop: totalSessions > 0 ? Math.round((deviceTypes.Desktop / totalSessions) * 100) : 0,
+      Mobile: totalSessions > 0 ? Math.round((deviceTypes.Mobile / totalSessions) * 100) : 0,
+      Tablet: totalSessions > 0 ? Math.round((deviceTypes.Tablet / totalSessions) * 100) : 0,
+      Other: totalSessions > 0 ? Math.round((deviceTypes.Other / totalSessions) * 100) : 0
     }
 
-    filteredSessions.forEach(session => {
-      const sessionDate = new Date(session.created_at).toISOString().split('T')[0]
-      if (sessionsOverTime.hasOwnProperty(sessionDate)) {
-        sessionsOverTime[sessionDate] += 1
+    // Browser analysis with proper undefined checks
+    const browsers: Record<string, number> = {}
+    sessions.forEach(session => {
+      const userAgent = session.metadata?.user_agent || ''
+      let browserName = 'Other'
+      
+      if (userAgent.includes('Chrome') && !userAgent.includes('Edge')) {
+        browserName = 'Chrome'
+      } else if (userAgent.includes('Firefox')) {
+        browserName = 'Firefox'
+      } else if (userAgent.includes('Safari') && !userAgent.includes('Chrome')) {
+        browserName = 'Safari'
+      } else if (userAgent.includes('Edge')) {
+        browserName = 'Edge'
+      }
+      
+      browsers[browserName] = (browsers[browserName] || 0) + 1
+    })
+
+    // Convert to percentages with proper validation
+    const browserPercentages: Record<string, number> = {}
+    Object.entries(browsers).forEach(([browser, count]) => {
+      if (typeof count === 'number' && totalSessions > 0) {
+        browserPercentages[browser] = Math.round((count / totalSessions) * 100)
       }
     })
 
-    const sessionsChart = Object.entries(sessionsOverTime)
-      .map(([date, sessions]) => ({
-        date,
-        sessions,
-        formatted_date: new Date(date).toLocaleDateString('en-US', { 
-          month: 'short', 
-          day: 'numeric' 
-        })
-      }))
-      .sort((a, b) => a.date.localeCompare(b.date))
+    // Calculate hourly distribution with proper undefined checks
+    const hourlyData: Record<string, number> = {}
+    sessions.forEach(session => {
+      const startedAt = session.metadata?.started_at
+      if (startedAt && typeof startedAt === 'string') {
+        try {
+          const hour = new Date(startedAt).getHours()
+          const hourKey = `${hour}:00`
+          hourlyData[hourKey] = (hourlyData[hourKey] || 0) + 1
+        } catch (error) {
+          // Invalid date string, skip this session
+        }
+      }
+    })
 
-    // Heatmap stats
-    const totalHeatmaps = heatmaps.length
+    // Recent activity with proper validation
+    const recentActivity = sessions
+      .slice(0, 10)
+      .map(session => {
+        const startedAt = session.metadata?.started_at
+        const pages = session.metadata?.pages_visited
+        const pageCount = Array.isArray(pages) ? pages.length : 0
+        
+        return {
+          type: 'session',
+          description: `New session with ${pageCount} page view${pageCount !== 1 ? 's' : ''}`,
+          timestamp: startedAt || new Date().toISOString(),
+          sessionId: session.metadata?.session_id || session.id
+        }
+      })
+      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime())
+
+    // Calculate total clicks from heatmaps with proper validation
     const totalClicks = heatmaps.reduce((sum, heatmap) => {
-      const clickData = Array.isArray(heatmap.metadata?.click_data) 
-        ? heatmap.metadata.click_data 
-        : []
-      return sum + clickData.reduce((clickSum, point) => clickSum + (point.count || 0), 0)
+      const clickData = heatmap.metadata?.click_data
+      if (Array.isArray(clickData)) {
+        return sum + clickData.reduce((clickSum, point) => 
+          clickSum + (point?.count || 0), 0
+        )
+      }
+      return sum
     }, 0)
 
-    // Recent activity (last 10 sessions)
-    const recentActivity = filteredSessions
-      .slice(0, 10)
-      .map(session => ({
-        type: 'session',
-        description: `New session from ${getDeviceType(session.metadata.user_agent)}`,
-        timestamp: session.created_at,
-        session_id: session.id,
-        duration: session.metadata.duration || 0,
-        page_views: session.metadata.page_views || 0
-      }))
-
-    const stats = {
-      overview: {
-        totalSessions,
-        totalPageViews,
-        totalEvents,
-        averageDuration: Math.round(averageDuration / 1000), // Convert to seconds
-        bounceRate: Math.round(bounceRate * 100) / 100,
-        totalHeatmaps,
-        totalClicks
-      },
+    return NextResponse.json({
+      totalSessions,
+      totalPageViews,
+      averageDuration,
       topPages,
-      deviceStats: deviceStats.filter(device => device.value > 0), // Only show devices with data
-      sessionsChart,
+      bounceRate,
+      deviceTypes: devicePercentages,
+      browsers: browserPercentages,
+      hourlyData,
       recentActivity,
-      period,
-      dateRange: {
-        start: startDate.toISOString(),
-        end: now.toISOString()
-      }
-    }
-
-    return NextResponse.json(stats)
+      totalClicks,
+      totalHeatmaps: heatmaps.length
+    })
 
   } catch (error) {
     console.error('Error fetching stats:', error)
     return NextResponse.json({ 
-      error: 'Failed to fetch analytics data',
-      overview: {
-        totalSessions: 0,
-        totalPageViews: 0,
-        totalEvents: 0,
-        averageDuration: 0,
-        bounceRate: 0,
-        totalHeatmaps: 0,
-        totalClicks: 0
-      },
+      error: 'Failed to fetch statistics',
+      totalSessions: 0,
+      totalPageViews: 0,
+      averageDuration: 0,
       topPages: [],
-      deviceStats: [],
-      sessionsChart: [],
-      recentActivity: []
+      bounceRate: 0,
+      deviceTypes: { Desktop: 0, Mobile: 0, Tablet: 0, Other: 0 },
+      browsers: {},
+      hourlyData: {},
+      recentActivity: [],
+      totalClicks: 0,
+      totalHeatmaps: 0
     }, { status: 500 })
   }
-}
-
-function getDeviceType(userAgent: string = ''): string {
-  if (/iPad/.test(userAgent)) return 'Tablet'
-  if (/Mobile|Android|iPhone/.test(userAgent)) return 'Mobile'
-  if (/Tablet/.test(userAgent)) return 'Tablet'
-  if (/Windows|Mac|Linux/.test(userAgent)) return 'Desktop'
-  return 'Unknown'
 }
