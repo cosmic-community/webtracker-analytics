@@ -283,7 +283,7 @@ export async function getHeatmapData(websiteDomain: string, pageUrl?: string): P
       return processed;
     });
     
-    // Sort by last_updated (newest first)
+    // Sort by last_updated (newest first) - Fixed TypeScript error here
     const sortedHeatmaps = processedHeatmaps.sort((a: HeatmapData, b: HeatmapData) => {
       const dateA = new Date(a.metadata?.last_updated || '').getTime();
       const dateB = new Date(b.metadata?.last_updated || '').getTime();
