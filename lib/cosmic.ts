@@ -131,7 +131,28 @@ export async function getSessions(limit: number = 50): Promise<TrackingSession[]
       return [];
     }
 
-    const sessions = (response.objects as TrackingSession[]).sort((a: TrackingSession, b: TrackingSession) => {
+    // Process sessions to parse JSON strings in metadata
+    const processedSessions = response.objects.map((session: any) => {
+      const processed = { ...session };
+      
+      if (processed.metadata) {
+        // Parse events if it's a JSON string
+        processed.metadata.events = safeJsonParse<TrackingEvent>(processed.metadata.events, []);
+        
+        // Parse pages_visited if it's a JSON string - THIS FIXES THE JOIN ERROR
+        processed.metadata.pages_visited = safeJsonParse<string>(processed.metadata.pages_visited, ['/']);
+        
+        // Ensure numeric fields are properly typed
+        processed.metadata.duration = Number(processed.metadata.duration) || 0;
+        processed.metadata.page_views = Number(processed.metadata.page_views) || 0;
+        processed.metadata.total_clicks = Number(processed.metadata.total_clicks) || 0;
+        processed.metadata.total_scrolls = Number(processed.metadata.total_scrolls) || 0;
+      }
+      
+      return processed;
+    });
+
+    const sessions = (processedSessions as TrackingSession[]).sort((a: TrackingSession, b: TrackingSession) => {
       const dateA = new Date(a.created_at).getTime();
       const dateB = new Date(b.created_at).getTime();
       return dateB - dateA;
@@ -154,7 +175,24 @@ export async function getSession(sessionId: string): Promise<TrackingSession | n
       id: sessionId
     }).depth(1);
     
-    return response.object as TrackingSession;
+    const session = response.object as TrackingSession;
+    
+    // Process session to parse JSON strings in metadata
+    if (session?.metadata) {
+      // Parse events if it's a JSON string
+      session.metadata.events = safeJsonParse<TrackingEvent>(session.metadata.events, []);
+      
+      // Parse pages_visited if it's a JSON string - THIS FIXES THE JOIN ERROR
+      session.metadata.pages_visited = safeJsonParse<string>(session.metadata.pages_visited, ['/']);
+      
+      // Ensure numeric fields are properly typed
+      session.metadata.duration = Number(session.metadata.duration) || 0;
+      session.metadata.page_views = Number(session.metadata.page_views) || 0;
+      session.metadata.total_clicks = Number(session.metadata.total_clicks) || 0;
+      session.metadata.total_scrolls = Number(session.metadata.total_scrolls) || 0;
+    }
+    
+    return session;
   } catch (error) {
     if (hasStatus(error) && error.status === 404) {
       return null;
