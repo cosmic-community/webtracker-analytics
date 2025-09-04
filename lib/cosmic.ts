@@ -131,7 +131,7 @@ export async function getSessions(limit: number = 50): Promise<TrackingSession[]
       return [];
     }
 
-    const sessions = (response.objects as TrackingSession[]).sort((a, b) => {
+    const sessions = (response.objects as TrackingSession[]).sort((a: TrackingSession, b: TrackingSession) => {
       const dateA = new Date(a.created_at).getTime();
       const dateB = new Date(b.created_at).getTime();
       return dateB - dateA;
@@ -284,7 +284,7 @@ export async function getHeatmapData(websiteDomain: string, pageUrl?: string): P
     });
     
     // Sort by last_updated (newest first)
-    const sortedHeatmaps = processedHeatmaps.sort((a, b) => {
+    const sortedHeatmaps = processedHeatmaps.sort((a: HeatmapData, b: HeatmapData) => {
       const dateA = new Date(a.metadata?.last_updated || '').getTime();
       const dateB = new Date(b.metadata?.last_updated || '').getTime();
       return dateB - dateA;
