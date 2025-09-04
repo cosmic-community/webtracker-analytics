@@ -3,347 +3,302 @@
 
   // Configuration
   const CONFIG = {
-    API_BASE_URL: window.location.origin,
-    TRACKING_ENABLED: true,
-    SAMPLE_RATE: 100,
-    MAX_SESSION_DURATION: 30 * 60 * 1000, // 30 minutes
-    HEARTBEAT_INTERVAL: 30000, // 30 seconds
-    BATCH_SIZE: 10,
-    DEBUG: false
+    API_ENDPOINT: '/api',
+    SESSION_STORAGE_KEY: 'webtracker_session_id',
+    BATCH_SIZE: 50,
+    FLUSH_INTERVAL: 5000, // 5 seconds
+    SESSION_TIMEOUT: 30 * 60 * 1000, // 30 minutes
+    SAMPLE_RATE: 100, // Percentage of sessions to track
+    MAX_EVENTS: 1000
   };
 
-  // State management
+  // Global state
   let sessionId = null;
-  let sessionStartTime = Date.now();
-  let lastActivityTime = Date.now();
-  let eventQueue = [];
+  let events = [];
+  let flushTimer = null;
+  let lastActivity = Date.now();
   let isTracking = false;
-  let heartbeatTimer = null;
+  let websiteDomain = '';
 
   // Utility functions
-  function log(message, data = null) {
-    if (CONFIG.DEBUG) {
-      console.log('[WebTracker]', message, data);
-    }
-  }
-
   function generateSessionId() {
-    return 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+    return 'wt_' + Math.random().toString(36).substr(2, 16) + '_' + Date.now();
   }
 
-  function getElementPath(element) {
-    if (!element || element === document.body) return 'body';
+  function getSessionId() {
+    if (sessionId) return sessionId;
     
-    let path = [];
-    while (element && element !== document.body) {
-      let selector = element.tagName.toLowerCase();
-      
-      if (element.id) {
-        selector += '#' + element.id;
-        path.unshift(selector);
-        break;
-      }
-      
-      if (element.className) {
-        const classes = element.className.split(' ').filter(c => c.trim());
-        if (classes.length > 0) {
-          selector += '.' + classes.slice(0, 2).join('.');
+    // Try to get existing session from storage
+    const stored = sessionStorage.getItem(CONFIG.SESSION_STORAGE_KEY);
+    if (stored) {
+      try {
+        const data = JSON.parse(stored);
+        if (Date.now() - data.lastActivity < CONFIG.SESSION_TIMEOUT) {
+          sessionId = data.sessionId;
+          return sessionId;
         }
+      } catch (e) {
+        console.warn('Failed to parse stored session data');
       }
-      
-      path.unshift(selector);
-      element = element.parentElement;
-      
-      if (path.length > 5) break; // Limit path depth
     }
     
-    return path.join(' > ');
-  }
-
-  function createEvent(type, data = {}) {
-    return {
-      id: Math.random().toString(36).substr(2, 9),
-      type,
-      timestamp: Date.now(),
-      url: window.location.href,
-      ...data
-    };
-  }
-
-  function addToQueue(event) {
-    eventQueue.push(event);
-    lastActivityTime = Date.now();
+    // Generate new session ID
+    sessionId = generateSessionId();
+    sessionStorage.setItem(CONFIG.SESSION_STORAGE_KEY, JSON.stringify({
+      sessionId: sessionId,
+      lastActivity: Date.now()
+    }));
     
-    if (eventQueue.length >= CONFIG.BATCH_SIZE) {
+    return sessionId;
+  }
+
+  function updateLastActivity() {
+    lastActivity = Date.now();
+    sessionStorage.setItem(CONFIG.SESSION_STORAGE_KEY, JSON.stringify({
+      sessionId: getSessionId(),
+      lastActivity: lastActivity
+    }));
+  }
+
+  function shouldTrack() {
+    return Math.random() * 100 < CONFIG.SAMPLE_RATE;
+  }
+
+  function addEvent(eventData) {
+    if (!isTracking) return;
+    
+    const event = {
+      id: 'evt_' + Math.random().toString(36).substr(2, 12),
+      timestamp: Date.now(),
+      url: window.location.pathname + window.location.search,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      pageWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+      pageHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
+      ...eventData
+    };
+
+    events.push(event);
+    updateLastActivity();
+
+    // Limit events to prevent memory issues
+    if (events.length > CONFIG.MAX_EVENTS) {
+      events = events.slice(-CONFIG.MAX_EVENTS);
+    }
+
+    // Auto-flush if batch size reached
+    if (events.length >= CONFIG.BATCH_SIZE) {
       flushEvents();
     }
   }
 
   async function flushEvents() {
-    if (eventQueue.length === 0 || !sessionId) return;
-    
-    const events = [...eventQueue];
-    eventQueue = [];
-    
-    try {
-      const response = await fetch(`${CONFIG.API_BASE_URL}/api/sessions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          session_id: sessionId,
-          events: events,
-          website_domain: window.location.hostname
-        })
-      });
-      
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}`);
-      }
-      
-      log('Events flushed successfully', { count: events.length });
-    } catch (error) {
-      log('Failed to flush events', error);
-      // Re-add events to queue for retry
-      eventQueue.unshift(...events);
-    }
-  }
+    if (events.length === 0) return;
 
-  async function startSession() {
-    sessionId = generateSessionId();
-    sessionStartTime = Date.now();
-    
+    const eventsToSend = [...events];
+    events = []; // Clear the events array immediately
+
     try {
-      const response = await fetch(`${CONFIG.API_BASE_URL}/api/sessions`, {
+      console.log('Flushing', eventsToSend.length, 'events to API');
+      
+      const response = await fetch(`${CONFIG.API_ENDPOINT}/sessions`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          session_id: sessionId,
-          action: 'start',
-          website_domain: window.location.hostname,
+          session_id: getSessionId(),
+          website_domain: websiteDomain,
           user_agent: navigator.userAgent,
-          page_url: window.location.pathname,
-          referrer: document.referrer
+          events: eventsToSend
         })
       });
-      
+
       if (response.ok) {
-        log('Session started', { sessionId });
-        isTracking = true;
-        startHeartbeat();
+        const result = await response.json();
+        console.log('Session data saved:', result.action, result.sessionId);
+        
+        // Also update heatmap data
+        await updateHeatmapData(eventsToSend);
+      } else {
+        console.error('Failed to send session data:', response.status, response.statusText);
+        // Put events back if failed to send
+        events = [...eventsToSend, ...events];
       }
     } catch (error) {
-      log('Failed to start session', error);
+      console.error('Error sending session data:', error);
+      // Put events back if failed to send
+      events = [...eventsToSend, ...events];
     }
   }
 
-  function startHeartbeat() {
-    heartbeatTimer = setInterval(() => {
-      const now = Date.now();
-      const sessionDuration = now - sessionStartTime;
-      const timeSinceActivity = now - lastActivityTime;
-      
-      // End session if inactive for too long or max duration reached
-      if (timeSinceActivity > CONFIG.MAX_SESSION_DURATION || sessionDuration > CONFIG.MAX_SESSION_DURATION) {
-        endSession();
-        return;
-      }
-      
-      // Send heartbeat event
-      addToQueue(createEvent('heartbeat', {
-        duration: sessionDuration,
-        timeSinceActivity
-      }));
-      
-      flushEvents();
-    }, CONFIG.HEARTBEAT_INTERVAL);
-  }
-
-  async function endSession() {
-    if (!isTracking || !sessionId) return;
-    
-    isTracking = false;
-    clearInterval(heartbeatTimer);
-    
-    // Flush remaining events
-    await flushEvents();
-    
+  async function updateHeatmapData(sessionEvents) {
     try {
-      await fetch(`${CONFIG.API_BASE_URL}/api/sessions`, {
+      const response = await fetch(`${CONFIG.API_ENDPOINT}/heatmaps`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
-          session_id: sessionId,
-          action: 'end',
-          duration: Date.now() - sessionStartTime
+          website_domain: websiteDomain,
+          page_url: window.location.pathname,
+          events: sessionEvents
         })
       });
-      
-      log('Session ended', { sessionId });
+
+      if (response.ok) {
+        console.log('Heatmap data updated successfully');
+      } else {
+        console.error('Failed to update heatmap data:', response.status);
+      }
     } catch (error) {
-      log('Failed to end session', error);
+      console.error('Error updating heatmap data:', error);
     }
-    
-    sessionId = null;
+  }
+
+  function startFlushTimer() {
+    if (flushTimer) clearInterval(flushTimer);
+    flushTimer = setInterval(flushEvents, CONFIG.FLUSH_INTERVAL);
+  }
+
+  function stopFlushTimer() {
+    if (flushTimer) {
+      clearInterval(flushTimer);
+      flushTimer = null;
+    }
   }
 
   // Event listeners
-  function setupEventListeners() {
-    // Mouse events
-    let mouseMoveTimeout;
-    document.addEventListener('mousemove', (e) => {
-      if (!isTracking) return;
-      
-      clearTimeout(mouseMoveTimeout);
-      mouseMoveTimeout = setTimeout(() => {
-        addToQueue(createEvent('mousemove', {
-          x: e.clientX,
-          y: e.clientY,
-          pageX: e.pageX,
-          pageY: e.pageY
-        }));
-      }, 100); // Throttle mousemove events
+  function attachEventListeners() {
+    // Page view tracking
+    addEvent({
+      type: 'pageview',
+      referrer: document.referrer
     });
 
-    document.addEventListener('click', (e) => {
-      if (!isTracking) return;
-      
-      addToQueue(createEvent('click', {
-        x: e.clientX,
-        y: e.clientY,
-        pageX: e.pageX,
-        pageY: e.pageY,
-        element: getElementPath(e.target),
-        button: e.button
-      }));
+    // Click tracking
+    document.addEventListener('click', function(e) {
+      addEvent({
+        type: 'click',
+        x: e.clientX + window.scrollX,
+        y: e.clientY + window.scrollY,
+        element: e.target.tagName.toLowerCase(),
+        elementId: e.target.id,
+        elementClass: e.target.className
+      });
     });
 
-    // Scroll events
+    // Mouse movement tracking (sampled)
+    let mouseMoveCounter = 0;
+    document.addEventListener('mousemove', function(e) {
+      mouseMoveCounter++;
+      // Sample every 10th mouse move to reduce data volume
+      if (mouseMoveCounter % 10 === 0) {
+        addEvent({
+          type: 'mousemove',
+          x: e.clientX + window.scrollX,
+          y: e.clientY + window.scrollY
+        });
+      }
+    });
+
+    // Scroll tracking
     let scrollTimeout;
-    window.addEventListener('scroll', () => {
-      if (!isTracking) return;
-      
+    window.addEventListener('scroll', function() {
       clearTimeout(scrollTimeout);
-      scrollTimeout = setTimeout(() => {
-        addToQueue(createEvent('scroll', {
-          scrollTop: window.pageYOffset,
-          scrollLeft: window.pageXOffset,
-          windowWidth: window.innerWidth,
-          windowHeight: window.innerHeight,
-          pageWidth: document.documentElement.scrollWidth,
-          pageHeight: document.documentElement.scrollHeight
-        }));
-      }, 250); // Throttle scroll events
+      scrollTimeout = setTimeout(function() {
+        addEvent({
+          type: 'scroll',
+          scrollTop: window.pageYOffset || document.documentElement.scrollTop,
+          scrollLeft: window.pageXOffset || document.documentElement.scrollLeft
+        });
+      }, 100); // Debounce scroll events
     });
 
-    // Page events
-    window.addEventListener('resize', () => {
-      if (!isTracking) return;
-      
-      addToQueue(createEvent('resize', {
-        windowWidth: window.innerWidth,
-        windowHeight: window.innerHeight
-      }));
+    // Window resize tracking
+    let resizeTimeout;
+    window.addEventListener('resize', function() {
+      clearTimeout(resizeTimeout);
+      resizeTimeout = setTimeout(function() {
+        addEvent({
+          type: 'resize'
+        });
+      }, 250); // Debounce resize events
     });
 
-    // Page visibility
-    document.addEventListener('visibilitychange', () => {
-      if (!isTracking) return;
-      
-      addToQueue(createEvent('visibility', {
-        hidden: document.hidden
-      }));
-    });
+    // Page unload - flush remaining events
+    window.addEventListener('beforeunload', function() {
+      if (events.length > 0) {
+        // Use sendBeacon for reliable delivery during page unload
+        const payload = JSON.stringify({
+          session_id: getSessionId(),
+          website_domain: websiteDomain,
+          user_agent: navigator.userAgent,
+          events: events
+        });
 
-    // Page navigation
-    window.addEventListener('beforeunload', () => {
-      if (isTracking) {
-        endSession();
+        if (navigator.sendBeacon) {
+          navigator.sendBeacon(`${CONFIG.API_ENDPOINT}/sessions`, payload);
+        } else {
+          // Fallback for browsers without sendBeacon
+          flushEvents();
+        }
       }
     });
 
-    // History API
-    const originalPushState = history.pushState;
-    const originalReplaceState = history.replaceState;
-    
-    history.pushState = function() {
-      originalPushState.apply(history, arguments);
-      if (isTracking) {
-        addToQueue(createEvent('pageview', {
-          url: window.location.href,
-          type: 'pushState'
-        }));
-      }
-    };
-    
-    history.replaceState = function() {
-      originalReplaceState.apply(history, arguments);
-      if (isTracking) {
-        addToQueue(createEvent('pageview', {
-          url: window.location.href,
-          type: 'replaceState'
-        }));
-      }
-    };
-
-    window.addEventListener('popstate', () => {
-      if (isTracking) {
-        addToQueue(createEvent('pageview', {
-          url: window.location.href,
-          type: 'popstate'
-        }));
+    // Page visibility changes
+    document.addEventListener('visibilitychange', function() {
+      if (document.hidden) {
+        flushEvents();
+        stopFlushTimer();
+      } else {
+        updateLastActivity();
+        startFlushTimer();
       }
     });
   }
 
-  // Initialization
+  // Initialize tracking
   function init() {
-    if (!CONFIG.TRACKING_ENABLED) {
-      log('Tracking disabled');
+    // Get website domain from current location
+    websiteDomain = window.location.hostname + (window.location.port ? ':' + window.location.port : '');
+    
+    console.log('WebTracker initialized for domain:', websiteDomain);
+
+    // Check if we should track this session
+    if (!shouldTrack()) {
+      console.log('Session not selected for tracking (sample rate: ' + CONFIG.SAMPLE_RATE + '%)');
       return;
     }
 
-    // Check sampling rate
-    if (Math.random() * 100 > CONFIG.SAMPLE_RATE) {
-      log('Session skipped due to sampling rate');
-      return;
-    }
+    isTracking = true;
+    console.log('WebTracker active - Session ID:', getSessionId());
 
-    log('Initializing WebTracker');
-    
-    // Setup event listeners
-    setupEventListeners();
-    
-    // Start tracking when page is loaded
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', startSession);
-    } else {
-      startSession();
-    }
+    // Attach event listeners
+    attachEventListeners();
 
-    // Initial page view
-    if (isTracking) {
-      addToQueue(createEvent('pageview', {
-        url: window.location.href,
-        referrer: document.referrer,
-        type: 'initial'
-      }));
-    }
+    // Start the flush timer
+    startFlushTimer();
+
+    // Initial flush after a short delay to establish the session
+    setTimeout(flushEvents, 1000);
   }
 
   // Public API
   window.WebTracker = {
-    start: startSession,
-    stop: endSession,
+    init: init,
     flush: flushEvents,
-    config: CONFIG
+    addEvent: addEvent,
+    getSessionId: getSessionId,
+    isTracking: function() { return isTracking; }
   };
 
-  // Auto-initialize
-  init();
+  // Auto-initialize when the DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init);
+  } else {
+    // DOM is already ready
+    init();
+  }
+
 })();
