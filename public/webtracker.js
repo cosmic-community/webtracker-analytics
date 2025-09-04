@@ -1,304 +1,351 @@
 (function() {
   'use strict';
-
+  
+  console.log('🎯 WebTracker initialized');
+  
   // Configuration
   const CONFIG = {
-    API_ENDPOINT: '/api',
-    SESSION_STORAGE_KEY: 'webtracker_session_id',
-    BATCH_SIZE: 50,
-    FLUSH_INTERVAL: 5000, // 5 seconds
+    API_ENDPOINT: '/api/sessions',
+    HEATMAP_ENDPOINT: '/api/heatmaps',
     SESSION_TIMEOUT: 30 * 60 * 1000, // 30 minutes
-    SAMPLE_RATE: 100, // Percentage of sessions to track
-    MAX_EVENTS: 1000
+    BATCH_SIZE: 50,
+    BATCH_INTERVAL: 5000, // 5 seconds
+    MOUSE_SAMPLE_RATE: 10, // Track every 10th mousemove
+    SCROLL_THROTTLE: 100, // Throttle scroll events
+    WEBSITE_DOMAIN: window.location.hostname + ':' + (window.location.port || (window.location.protocol === 'https:' ? '443' : '80'))
   };
-
-  // Global state
-  let sessionId = null;
-  let events = [];
-  let flushTimer = null;
-  let lastActivity = Date.now();
-  let isTracking = false;
-  let websiteDomain = '';
-
-  // Utility functions
+  
+  // State management
+  const state = {
+    sessionId: null,
+    events: [],
+    startTime: Date.now(),
+    lastActivity: Date.now(),
+    mouseMoveCounter: 0,
+    isTracking: false,
+    pageViews: 0,
+    hasBeenActive: false
+  };
+  
+  // Generate unique session ID
   function generateSessionId() {
-    return 'wt_' + Math.random().toString(36).substr(2, 16) + '_' + Date.now();
+    return 'wt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
   }
-
+  
+  // Get or create session ID
   function getSessionId() {
-    if (sessionId) return sessionId;
+    if (state.sessionId) {
+      return state.sessionId;
+    }
     
-    // Try to get existing session from storage
-    const stored = sessionStorage.getItem(CONFIG.SESSION_STORAGE_KEY);
-    if (stored) {
-      try {
-        const data = JSON.parse(stored);
-        if (Date.now() - data.lastActivity < CONFIG.SESSION_TIMEOUT) {
-          sessionId = data.sessionId;
-          return sessionId;
-        }
-      } catch (e) {
-        console.warn('Failed to parse stored session data');
+    // Try to get from sessionStorage first
+    let sessionId = sessionStorage.getItem('webtracker_session_id');
+    const sessionStart = sessionStorage.getItem('webtracker_session_start');
+    
+    // Check if session is still valid (not expired)
+    if (sessionId && sessionStart) {
+      const elapsed = Date.now() - parseInt(sessionStart);
+      if (elapsed < CONFIG.SESSION_TIMEOUT) {
+        state.sessionId = sessionId;
+        state.startTime = parseInt(sessionStart);
+        console.log('🎯 Resumed existing session:', sessionId);
+        return sessionId;
       }
     }
     
-    // Generate new session ID
+    // Create new session
     sessionId = generateSessionId();
-    sessionStorage.setItem(CONFIG.SESSION_STORAGE_KEY, JSON.stringify({
-      sessionId: sessionId,
-      lastActivity: Date.now()
-    }));
+    state.sessionId = sessionId;
+    state.startTime = Date.now();
     
+    sessionStorage.setItem('webtracker_session_id', sessionId);
+    sessionStorage.setItem('webtracker_session_start', state.startTime.toString());
+    
+    console.log('🎯 Created new session:', sessionId);
     return sessionId;
   }
-
-  function updateLastActivity() {
-    lastActivity = Date.now();
-    sessionStorage.setItem(CONFIG.SESSION_STORAGE_KEY, JSON.stringify({
-      sessionId: getSessionId(),
-      lastActivity: lastActivity
-    }));
-  }
-
-  function shouldTrack() {
-    return Math.random() * 100 < CONFIG.SAMPLE_RATE;
-  }
-
+  
+  // Add event to queue
   function addEvent(eventData) {
-    if (!isTracking) return;
-    
     const event = {
-      id: 'evt_' + Math.random().toString(36).substr(2, 12),
+      id: 'evt_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
       timestamp: Date.now(),
       url: window.location.pathname + window.location.search,
-      windowWidth: window.innerWidth,
-      windowHeight: window.innerHeight,
-      pageWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
-      pageHeight: Math.max(document.documentElement.scrollHeight, document.body.scrollHeight),
       ...eventData
     };
-
-    events.push(event);
-    updateLastActivity();
-
-    // Limit events to prevent memory issues
-    if (events.length > CONFIG.MAX_EVENTS) {
-      events = events.slice(-CONFIG.MAX_EVENTS);
-    }
-
-    // Auto-flush if batch size reached
-    if (events.length >= CONFIG.BATCH_SIZE) {
+    
+    state.events.push(event);
+    state.lastActivity = Date.now();
+    
+    // Auto-flush if batch is full
+    if (state.events.length >= CONFIG.BATCH_SIZE) {
       flushEvents();
     }
   }
-
+  
+  // Send events to server
   async function flushEvents() {
-    if (events.length === 0) return;
-
-    const eventsToSend = [...events];
-    events = []; // Clear the events array immediately
-
+    if (state.events.length === 0) return;
+    
+    const eventsToSend = [...state.events];
+    state.events = []; // Clear the queue immediately
+    
+    const sessionData = {
+      session_id: getSessionId(),
+      website_domain: CONFIG.WEBSITE_DOMAIN,
+      user_agent: navigator.userAgent,
+      events: eventsToSend,
+      duration: Date.now() - state.startTime,
+      page_views: state.pageViews
+    };
+    
+    console.log('🎯 Sending session data:', {
+      session_id: sessionData.session_id,
+      events_count: eventsToSend.length,
+      duration: sessionData.duration,
+      page_views: sessionData.page_views
+    });
+    
     try {
-      console.log('Flushing', eventsToSend.length, 'events to API');
-      
-      const response = await fetch(`${CONFIG.API_ENDPOINT}/sessions`, {
+      const response = await fetch(CONFIG.API_ENDPOINT, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          session_id: getSessionId(),
-          website_domain: websiteDomain,
-          user_agent: navigator.userAgent,
-          events: eventsToSend
-        })
+        body: JSON.stringify(sessionData)
       });
-
+      
       if (response.ok) {
         const result = await response.json();
-        console.log('Session data saved:', result.action, result.sessionId);
+        console.log('✅ Session data sent successfully:', result);
         
-        // Also update heatmap data
-        await updateHeatmapData(eventsToSend);
+        // Also send heatmap data
+        await sendHeatmapData(eventsToSend);
       } else {
-        console.error('Failed to send session data:', response.status, response.statusText);
-        // Put events back if failed to send
-        events = [...eventsToSend, ...events];
+        console.error('❌ Failed to send session data:', response.status, response.statusText);
+        // Put events back in queue for retry
+        state.events.unshift(...eventsToSend);
       }
     } catch (error) {
-      console.error('Error sending session data:', error);
-      // Put events back if failed to send
-      events = [...eventsToSend, ...events];
+      console.error('❌ Network error sending session data:', error);
+      // Put events back in queue for retry
+      state.events.unshift(...eventsToSend);
     }
   }
-
-  async function updateHeatmapData(sessionEvents) {
+  
+  // Send heatmap data
+  async function sendHeatmapData(events) {
+    const heatmapData = {
+      website_domain: CONFIG.WEBSITE_DOMAIN,
+      page_url: window.location.pathname + window.location.search,
+      events: events
+    };
+    
     try {
-      const response = await fetch(`${CONFIG.API_ENDPOINT}/heatmaps`, {
+      const response = await fetch(CONFIG.HEATMAP_ENDPOINT, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          website_domain: websiteDomain,
-          page_url: window.location.pathname,
-          events: sessionEvents
-        })
+        body: JSON.stringify(heatmapData)
       });
-
+      
       if (response.ok) {
-        console.log('Heatmap data updated successfully');
+        console.log('✅ Heatmap data sent successfully');
       } else {
-        console.error('Failed to update heatmap data:', response.status);
+        console.error('❌ Failed to send heatmap data:', response.status);
       }
     } catch (error) {
-      console.error('Error updating heatmap data:', error);
+      console.error('❌ Network error sending heatmap data:', error);
     }
   }
-
-  function startFlushTimer() {
-    if (flushTimer) clearInterval(flushTimer);
-    flushTimer = setInterval(flushEvents, CONFIG.FLUSH_INTERVAL);
+  
+  // Track mouse clicks
+  function trackClick(event) {
+    if (!state.isTracking) return;
+    
+    const element = event.target;
+    const elementInfo = element.tagName.toLowerCase() + 
+      (element.id ? '#' + element.id : '') +
+      (element.className ? '.' + element.className.replace(/\s+/g, '.') : '');
+    
+    addEvent({
+      type: 'click',
+      x: event.clientX,
+      y: event.clientY,
+      element: elementInfo,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      pageWidth: document.documentElement.scrollWidth,
+      pageHeight: document.documentElement.scrollHeight
+    });
+    
+    console.log('🖱️ Click tracked:', { x: event.clientX, y: event.clientY, element: elementInfo });
   }
-
-  function stopFlushTimer() {
-    if (flushTimer) {
-      clearInterval(flushTimer);
-      flushTimer = null;
-    }
+  
+  // Track mouse movement (sampled)
+  function trackMouseMove(event) {
+    if (!state.isTracking) return;
+    
+    state.mouseMoveCounter++;
+    if (state.mouseMoveCounter % CONFIG.MOUSE_SAMPLE_RATE !== 0) return;
+    
+    addEvent({
+      type: 'mousemove',
+      x: event.clientX,
+      y: event.clientY,
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight
+    });
   }
-
-  // Event listeners
-  function attachEventListeners() {
-    // Page view tracking
+  
+  // Track scroll events (throttled)
+  let scrollTimeout = null;
+  function trackScroll() {
+    if (!state.isTracking) return;
+    
+    if (scrollTimeout) return;
+    
+    scrollTimeout = setTimeout(() => {
+      const scrollPercent = (window.scrollY / (document.documentElement.scrollHeight - window.innerHeight)) * 100;
+      
+      addEvent({
+        type: 'scroll',
+        scrollTop: window.scrollY,
+        scrollLeft: window.scrollX,
+        scrollPercent: Math.min(100, Math.max(0, scrollPercent)),
+        windowWidth: window.innerWidth,
+        windowHeight: window.innerHeight,
+        pageWidth: document.documentElement.scrollWidth,
+        pageHeight: document.documentElement.scrollHeight
+      });
+      
+      scrollTimeout = null;
+    }, CONFIG.SCROLL_THROTTLE);
+  }
+  
+  // Track page views
+  function trackPageView() {
+    state.pageViews++;
+    
     addEvent({
       type: 'pageview',
-      referrer: document.referrer
+      referrer: document.referrer || '',
+      title: document.title || '',
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      pageWidth: document.documentElement.scrollWidth,
+      pageHeight: document.documentElement.scrollHeight
     });
-
-    // Click tracking
-    document.addEventListener('click', function(e) {
-      addEvent({
-        type: 'click',
-        x: e.clientX + window.scrollX,
-        y: e.clientY + window.scrollY,
-        element: e.target.tagName.toLowerCase(),
-        elementId: e.target.id,
-        elementClass: e.target.className
-      });
+    
+    console.log('📄 Page view tracked:', window.location.pathname);
+  }
+  
+  // Track window resize
+  function trackResize() {
+    if (!state.isTracking) return;
+    
+    addEvent({
+      type: 'resize',
+      windowWidth: window.innerWidth,
+      windowHeight: window.innerHeight,
+      pageWidth: document.documentElement.scrollWidth,
+      pageHeight: document.documentElement.scrollHeight
     });
-
-    // Mouse movement tracking (sampled)
-    let mouseMoveCounter = 0;
-    document.addEventListener('mousemove', function(e) {
-      mouseMoveCounter++;
-      // Sample every 10th mouse move to reduce data volume
-      if (mouseMoveCounter % 10 === 0) {
-        addEvent({
-          type: 'mousemove',
-          x: e.clientX + window.scrollX,
-          y: e.clientY + window.scrollY
-        });
-      }
-    });
-
-    // Scroll tracking
-    let scrollTimeout;
-    window.addEventListener('scroll', function() {
-      clearTimeout(scrollTimeout);
-      scrollTimeout = setTimeout(function() {
-        addEvent({
-          type: 'scroll',
-          scrollTop: window.pageYOffset || document.documentElement.scrollTop,
-          scrollLeft: window.pageXOffset || document.documentElement.scrollLeft
-        });
-      }, 100); // Debounce scroll events
-    });
-
-    // Window resize tracking
-    let resizeTimeout;
-    window.addEventListener('resize', function() {
-      clearTimeout(resizeTimeout);
-      resizeTimeout = setTimeout(function() {
-        addEvent({
-          type: 'resize'
-        });
-      }, 250); // Debounce resize events
-    });
-
-    // Page unload - flush remaining events
-    window.addEventListener('beforeunload', function() {
-      if (events.length > 0) {
-        // Use sendBeacon for reliable delivery during page unload
-        const payload = JSON.stringify({
-          session_id: getSessionId(),
-          website_domain: websiteDomain,
-          user_agent: navigator.userAgent,
-          events: events
-        });
-
-        if (navigator.sendBeacon) {
-          navigator.sendBeacon(`${CONFIG.API_ENDPOINT}/sessions`, payload);
-        } else {
-          // Fallback for browsers without sendBeacon
-          flushEvents();
-        }
-      }
-    });
-
-    // Page visibility changes
-    document.addEventListener('visibilitychange', function() {
+  }
+  
+  // Start tracking
+  function startTracking() {
+    if (state.isTracking) return;
+    
+    console.log('🎯 Starting WebTracker');
+    state.isTracking = true;
+    
+    // Initialize session
+    getSessionId();
+    
+    // Track initial page view
+    trackPageView();
+    
+    // Event listeners
+    document.addEventListener('click', trackClick, { passive: true });
+    document.addEventListener('mousemove', trackMouseMove, { passive: true });
+    window.addEventListener('scroll', trackScroll, { passive: true });
+    window.addEventListener('resize', trackResize, { passive: true });
+    
+    // Periodic flush
+    setInterval(flushEvents, CONFIG.BATCH_INTERVAL);
+    
+    // Flush on page unload
+    window.addEventListener('beforeunload', flushEvents);
+    
+    // Handle page visibility changes
+    document.addEventListener('visibilitychange', () => {
       if (document.hidden) {
         flushEvents();
-        stopFlushTimer();
       } else {
-        updateLastActivity();
-        startFlushTimer();
+        state.lastActivity = Date.now();
       }
     });
-  }
-
-  // Initialize tracking
-  function init() {
-    // Get website domain from current location
-    websiteDomain = window.location.hostname + (window.location.port ? ':' + window.location.port : '');
     
-    console.log('WebTracker initialized for domain:', websiteDomain);
-
-    // Check if we should track this session
-    if (!shouldTrack()) {
-      console.log('Session not selected for tracking (sample rate: ' + CONFIG.SAMPLE_RATE + '%)');
-      return;
-    }
-
-    isTracking = true;
-    console.log('WebTracker active - Session ID:', getSessionId());
-
-    // Attach event listeners
-    attachEventListeners();
-
-    // Start the flush timer
-    startFlushTimer();
-
-    // Initial flush after a short delay to establish the session
-    setTimeout(flushEvents, 1000);
+    // Session timeout check
+    setInterval(() => {
+      const timeSinceActivity = Date.now() - state.lastActivity;
+      if (timeSinceActivity > CONFIG.SESSION_TIMEOUT) {
+        console.log('🎯 Session timeout, creating new session');
+        state.sessionId = null;
+        sessionStorage.removeItem('webtracker_session_id');
+        sessionStorage.removeItem('webtracker_session_start');
+      }
+    }, 60000); // Check every minute
+    
+    console.log('✅ WebTracker started successfully');
   }
-
+  
+  // Stop tracking
+  function stopTracking() {
+    if (!state.isTracking) return;
+    
+    console.log('🎯 Stopping WebTracker');
+    state.isTracking = false;
+    
+    // Remove event listeners
+    document.removeEventListener('click', trackClick);
+    document.removeEventListener('mousemove', trackMouseMove);
+    window.removeEventListener('scroll', trackScroll);
+    window.removeEventListener('resize', trackResize);
+    
+    // Final flush
+    flushEvents();
+    
+    console.log('🛑 WebTracker stopped');
+  }
+  
   // Public API
   window.WebTracker = {
-    init: init,
+    start: startTracking,
+    stop: stopTracking,
     flush: flushEvents,
-    addEvent: addEvent,
     getSessionId: getSessionId,
-    isTracking: function() { return isTracking; }
+    addEvent: addEvent
   };
-
-  // Auto-initialize when the DOM is ready
+  
+  // Auto-start tracking when DOM is ready
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
+    document.addEventListener('DOMContentLoaded', startTracking);
   } else {
-    // DOM is already ready
-    init();
+    startTracking();
   }
-
+  
+  // Handle page navigation in SPAs
+  let currentUrl = window.location.href;
+  const observer = new MutationObserver(() => {
+    if (window.location.href !== currentUrl) {
+      currentUrl = window.location.href;
+      trackPageView();
+    }
+  });
+  
+  observer.observe(document.body, { childList: true, subtree: true });
+  
 })();
