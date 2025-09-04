@@ -1,67 +1,37 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { getSessions, getHeatmapData } from '@/lib/cosmic'
-import type { TrackingSession, SessionStats, TrackingEvent } from '@/types'
+import type { TrackingSession, HeatmapData } from '@/types'
 
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
-    const { searchParams } = new URL(request.url)
-    const period = searchParams.get('period') || '7d' // 24h, 7d, 30d
-    const limit = parseInt(searchParams.get('limit') || '100')
-    
-    // Get recent sessions
-    const sessions = await getSessions(limit)
-    
-    // Calculate date range based on period
-    const now = new Date()
-    let startDate = new Date()
-    
-    switch (period) {
-      case '24h':
-        startDate.setHours(now.getHours() - 24)
-        break
-      case '7d':
-        startDate.setDate(now.getDate() - 7)
-        break
-      case '30d':
-        startDate.setDate(now.getDate() - 30)
-        break
-      default:
-        startDate.setDate(now.getDate() - 7)
-    }
-    
-    // Filter sessions by date range
-    const filteredSessions = sessions.filter(session => {
-      const sessionDate = new Date(session.created_at)
-      return sessionDate >= startDate && sessionDate <= now
-    })
+    // Fetch sessions and heatmaps data
+    const sessions = await getSessions(100)
+    const heatmaps = await getHeatmapData('')
 
-    // Calculate statistics safely
-    const totalSessions = filteredSessions.length
-    const totalPageViews = filteredSessions.reduce((sum, session) => {
+    // Basic stats
+    const totalSessions = sessions.length
+    const totalPageViews = sessions.reduce((sum, session) => {
       return sum + (session.metadata?.page_views || 0)
     }, 0)
-    
-    const totalEvents = filteredSessions.reduce((sum, session) => {
-      const events = session.metadata?.events
-      return sum + (Array.isArray(events) ? events.length : 0)
-    }, 0)
 
-    // Calculate average session duration safely
-    const durationsSum = filteredSessions.reduce((sum, session) => {
+    const totalDuration = sessions.reduce((sum, session) => {
       return sum + (session.metadata?.duration || 0)
     }, 0)
-    const averageDuration = totalSessions > 0 ? Math.round(durationsSum / totalSessions) : 0
 
-    // Calculate bounce rate (sessions with only 1 page view)
-    const bouncedSessions = filteredSessions.filter(session => {
-      return (session.metadata?.page_views || 0) <= 1
-    }).length
-    const bounceRate = totalSessions > 0 ? Math.round((bouncedSessions / totalSessions) * 100) : 0
+    const averageDuration = totalSessions > 0 ? Math.round(totalDuration / totalSessions) : 0
 
-    // Get top pages with safe access
+    // Calculate total clicks from heatmap data
+    const totalClicks = heatmaps.reduce((sum, heatmap) => {
+      const clickData = heatmap.metadata?.click_data
+      if (Array.isArray(clickData)) {
+        return sum + clickData.reduce((clickSum, point) => clickSum + (point.count || 0), 0)
+      }
+      return sum
+    }, 0)
+
+    // Page views analysis - safely handle pages_visited array
     const pageViewCounts: Record<string, number> = {}
-    
-    filteredSessions.forEach(session => {
+    sessions.forEach(session => {
       const pagesVisited = session.metadata?.pages_visited
       if (Array.isArray(pagesVisited)) {
         pagesVisited.forEach(page => {
@@ -73,101 +43,139 @@ export async function GET(request: NextRequest) {
     })
 
     const topPages = Object.entries(pageViewCounts)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 10)
+      .sort(([,a], [,b]) => b - a)
+      .slice(0, 5)
       .map(([url, views]) => ({ url, views }))
 
-    // Calculate hourly activity for the chart
-    const hourlyActivity: Record<string, number> = {}
-    
-    // Initialize all hours with 0
-    for (let hour = 0; hour < 24; hour++) {
-      const hourKey = hour.toString().padStart(2, '0') + ':00'
-      hourlyActivity[hourKey] = 0
-    }
-    
-    filteredSessions.forEach(session => {
-      const sessionDate = new Date(session.created_at)
-      const hour = sessionDate.getHours()
-      const hourKey = hour.toString().padStart(2, '0') + ':00'
-      
-      // Safe access to hourlyActivity
-      if (hourKey in hourlyActivity) {
-        hourlyActivity[hourKey] += 1
-      }
-    })
-
-    const hourlyData = Object.entries(hourlyActivity).map(([hour, sessions]) => ({
-      hour,
-      sessions
-    }))
-
-    // Get recent heatmaps
-    const heatmaps = await getHeatmapData('')
-
-    // Calculate device types from user agents
+    // Device type analysis - safely parse user agents
     const deviceTypes: Record<string, number> = {
       Mobile: 0,
-      Desktop: 0,
       Tablet: 0,
+      Desktop: 0,
       Other: 0
     }
 
-    filteredSessions.forEach(session => {
-      const userAgent = session.metadata?.user_agent || ''
-      if (userAgent.includes('Mobile') || userAgent.includes('iPhone') || userAgent.includes('Android')) {
-        deviceTypes.Mobile++
-      } else if (userAgent.includes('Tablet') || userAgent.includes('iPad')) {
-        deviceTypes.Tablet++
-      } else if (userAgent.includes('Windows') || userAgent.includes('Mac') || userAgent.includes('Linux')) {
-        deviceTypes.Desktop++
+    sessions.forEach(session => {
+      const userAgent = session.metadata?.user_agent
+      if (typeof userAgent === 'string') {
+        const ua = userAgent.toLowerCase()
+        
+        if (ua.includes('mobile') || ua.includes('iphone') || ua.includes('android')) {
+          deviceTypes.Mobile += 1
+        } else if (ua.includes('tablet') || ua.includes('ipad')) {
+          deviceTypes.Tablet += 1
+        } else if (ua.includes('mozilla') || ua.includes('chrome') || ua.includes('safari') || ua.includes('firefox')) {
+          deviceTypes.Desktop += 1
+        } else {
+          deviceTypes.Other += 1
+        }
       } else {
-        deviceTypes.Other++
+        // If user_agent is undefined or not a string, count as Other
+        deviceTypes.Other += 1
       }
     })
 
-    const deviceData = Object.entries(deviceTypes).map(([device, count]) => ({
-      device,
-      count,
-      percentage: totalSessions > 0 ? Math.round((count / totalSessions) * 100) : 0
-    }))
-
-    const stats: SessionStats = {
-      totalSessions,
-      totalPageViews,
-      averageDuration,
-      topPages,
-      bounceRate
+    // Session duration distribution
+    const durationRanges = {
+      '0-30s': 0,
+      '30s-1m': 0,
+      '1m-5m': 0,
+      '5m+': 0
     }
 
-    return NextResponse.json({
-      stats,
-      hourlyActivity: hourlyData,
-      deviceBreakdown: deviceData,
-      totalEvents,
-      heatmapsCount: heatmaps.length,
-      period,
-      dateRange: {
-        start: startDate.toISOString(),
-        end: now.toISOString()
+    sessions.forEach(session => {
+      const duration = session.metadata?.duration || 0
+      const durationInSeconds = duration / 1000
+
+      if (durationInSeconds <= 30) {
+        durationRanges['0-30s'] += 1
+      } else if (durationInSeconds <= 60) {
+        durationRanges['30s-1m'] += 1
+      } else if (durationInSeconds <= 300) {
+        durationRanges['1m-5m'] += 1
+      } else {
+        durationRanges['5m+'] += 1
       }
     })
 
+    // Calculate bounce rate (sessions with only 1 page view)
+    const bouncedSessions = sessions.filter(session => {
+      const pageViews = session.metadata?.page_views || 0
+      return pageViews <= 1
+    }).length
+
+    const bounceRate = totalSessions > 0 ? Math.round((bouncedSessions / totalSessions) * 100) : 0
+
+    // Recent activity (last 10 sessions)
+    const recentSessions = sessions.slice(0, 10)
+    const recentActivity = recentSessions.map(session => ({
+      type: 'session',
+      description: `Session from ${session.metadata?.pages_visited?.[0] || 'unknown page'}`,
+      timestamp: session.created_at,
+      sessionId: session.id,
+      duration: session.metadata?.duration || 0,
+      pageViews: session.metadata?.page_views || 0
+    }))
+
+    // Return comprehensive stats
+    return NextResponse.json({
+      overview: {
+        totalSessions,
+        totalPageViews,
+        totalClicks,
+        averageDuration,
+        bounceRate
+      },
+      topPages,
+      deviceTypes: {
+        // CRITICAL FIX: Safely access deviceTypes properties with fallback values
+        Mobile: deviceTypes.Mobile || 0,
+        Tablet: deviceTypes.Tablet || 0,
+        Desktop: deviceTypes.Desktop || 0,
+        Other: deviceTypes.Other || 0
+      },
+      durationRanges,
+      recentActivity,
+      heatmapStats: {
+        totalHeatmaps: heatmaps.length,
+        totalHotspots: heatmaps.reduce((sum, heatmap) => {
+          const clickData = heatmap.metadata?.click_data
+          if (Array.isArray(clickData)) {
+            return sum + clickData.filter(point => (point.count || 0) > 2).length
+          }
+          return sum
+        }, 0)
+      }
+    })
   } catch (error) {
-    console.error('Error generating stats:', error)
-    return NextResponse.json({ 
-      error: 'Failed to generate statistics',
-      stats: {
+    console.error('Error fetching stats:', error)
+    return NextResponse.json({
+      overview: {
         totalSessions: 0,
         totalPageViews: 0,
+        totalClicks: 0,
         averageDuration: 0,
-        topPages: [],
         bounceRate: 0
       },
-      hourlyActivity: [],
-      deviceBreakdown: [],
-      totalEvents: 0,
-      heatmapsCount: 0
+      topPages: [],
+      deviceTypes: {
+        Mobile: 0,
+        Tablet: 0,
+        Desktop: 0,
+        Other: 0
+      },
+      durationRanges: {
+        '0-30s': 0,
+        '30s-1m': 0,
+        '1m-5m': 0,
+        '5m+': 0
+      },
+      recentActivity: [],
+      heatmapStats: {
+        totalHeatmaps: 0,
+        totalHotspots: 0
+      },
+      error: 'Failed to fetch stats'
     }, { status: 500 })
   }
 }
