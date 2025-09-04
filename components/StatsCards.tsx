@@ -1,51 +1,100 @@
 'use client'
 
 import { useEffect, useState } from 'react'
-import { Users, MousePointer, Clock, Eye } from 'lucide-react'
+import { Users, Eye, MousePointer, Clock, TrendingUp, TrendingDown } from 'lucide-react'
 
-interface StatsData {
+interface OverviewStats {
   totalSessions: number
+  totalPageViews: number
+  totalEvents: number
   totalClicks: number
-  averageDuration: string
-  activeNow: number
+  averageDuration: number
+  bounceRate: number
+  sessionGrowth: number
 }
 
 export default function StatsCards() {
-  const [stats, setStats] = useState<StatsData>({
-    totalSessions: 0,
-    totalClicks: 0,
-    averageDuration: '0:00',
-    activeNow: 1 // Show current user as active
-  })
+  const [stats, setStats] = useState<OverviewStats | null>(null)
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchStats = async () => {
       try {
-        const response = await fetch('/api/stats')
+        setLoading(true)
+        setError(null)
+        
+        const response = await fetch('/api/stats?timeRange=7d')
         if (response.ok) {
           const data = await response.json()
-          setStats(data)
+          setStats(data.overview)
+        } else {
+          setError('Failed to fetch statistics')
+          setStats({
+            totalSessions: 0,
+            totalPageViews: 0,
+            totalEvents: 0,
+            totalClicks: 0,
+            averageDuration: 0,
+            bounceRate: 0,
+            sessionGrowth: 0
+          })
         }
       } catch (error) {
         console.error('Failed to fetch stats:', error)
+        setError('Network error while fetching statistics')
+        setStats({
+          totalSessions: 0,
+          totalPageViews: 0,
+          totalEvents: 0,
+          totalClicks: 0,
+          averageDuration: 0,
+          bounceRate: 0,
+          sessionGrowth: 0
+        })
       } finally {
         setLoading(false)
       }
     }
 
     fetchStats()
-
+    
     // Refresh stats every 30 seconds
     const interval = setInterval(fetchStats, 30000)
     return () => clearInterval(interval)
   }, [])
 
-  const formatDuration = (ms: number): string => {
-    const seconds = Math.floor(ms / 1000)
+  const formatDuration = (milliseconds: number): string => {
+    const seconds = Math.floor(milliseconds / 1000)
     const minutes = Math.floor(seconds / 60)
     const remainingSeconds = seconds % 60
-    return `${minutes}:${remainingSeconds.toString().padStart(2, '0')}`
+    
+    if (minutes > 0) {
+      return `${minutes}m ${remainingSeconds}s`
+    }
+    return `${seconds}s`
+  }
+
+  const formatGrowth = (growth: number): { text: string; color: string; icon: any } => {
+    if (growth > 0) {
+      return {
+        text: `+${growth.toFixed(1)}%`,
+        color: 'text-green-600',
+        icon: TrendingUp
+      }
+    } else if (growth < 0) {
+      return {
+        text: `${growth.toFixed(1)}%`,
+        color: 'text-red-600',
+        icon: TrendingDown
+      }
+    } else {
+      return {
+        text: '0%',
+        color: 'text-gray-500',
+        icon: TrendingUp
+      }
+    }
   }
 
   if (loading) {
@@ -53,12 +102,15 @@ export default function StatsCards() {
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         {[...Array(4)].map((_, i) => (
           <div key={i} className="stat-card">
-            <div className="flex items-center justify-between">
-              <div className="space-y-2">
-                <div className="h-4 bg-secondary rounded loading-shimmer w-20"></div>
-                <div className="h-8 bg-secondary rounded loading-shimmer w-16"></div>
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="w-8 h-8 bg-secondary rounded animate-pulse"></div>
+                <div className="w-12 h-4 bg-secondary rounded animate-pulse"></div>
               </div>
-              <div className="h-12 w-12 bg-secondary rounded-full loading-shimmer"></div>
+              <div className="space-y-2">
+                <div className="w-16 h-8 bg-secondary rounded animate-pulse"></div>
+                <div className="w-24 h-4 bg-secondary rounded animate-pulse"></div>
+              </div>
             </div>
           </div>
         ))}
@@ -66,68 +118,94 @@ export default function StatsCards() {
     )
   }
 
+  if (error || !stats) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-6 text-center">
+        <p className="text-red-600">
+          {error || 'Unable to load statistics'}
+        </p>
+        <p className="text-red-500 text-sm mt-1">
+          Stats will be available once tracking data is collected
+        </p>
+      </div>
+    )
+  }
+
+  const growth = formatGrowth(stats.sessionGrowth)
+  const GrowthIcon = growth.icon
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      {/* Total Sessions */}
       <div className="stat-card">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Total Sessions</p>
-            <p className="text-3xl font-bold text-primary">{stats.totalSessions}</p>
+          <div className="w-12 h-12 bg-blue-500/10 rounded-full flex items-center justify-center">
+            <Users className="w-6 h-6 text-blue-500" />
           </div>
-          <div className="h-12 w-12 bg-primary/10 rounded-full flex items-center justify-center">
-            <Users className="h-6 w-6 text-primary" />
+          <div className={`flex items-center gap-1 text-sm ${growth.color}`}>
+            <GrowthIcon className="w-4 h-4" />
+            {growth.text}
           </div>
         </div>
-        <div className="mt-4 text-xs text-muted-foreground">
-          <span className="text-green-500">+{Math.floor(stats.totalSessions * 0.12)}</span> from last week
+        <div className="mt-4">
+          <div className="text-2xl font-bold text-foreground">
+            {stats.totalSessions.toLocaleString()}
+          </div>
+          <p className="text-sm text-muted-foreground">Total Sessions</p>
         </div>
       </div>
 
+      {/* Page Views */}
       <div className="stat-card">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Total Clicks</p>
-            <p className="text-3xl font-bold text-blue-500">{stats.totalClicks.toLocaleString()}</p>
+          <div className="w-12 h-12 bg-green-500/10 rounded-full flex items-center justify-center">
+            <Eye className="w-6 h-6 text-green-500" />
           </div>
-          <div className="h-12 w-12 bg-blue-500/10 rounded-full flex items-center justify-center">
-            <MousePointer className="h-6 w-6 text-blue-500" />
+          <div className="text-sm text-muted-foreground">
+            Last 7 days
           </div>
         </div>
-        <div className="mt-4 text-xs text-muted-foreground">
-          <span className="text-green-500">+{Math.floor(stats.totalClicks * 0.08)}</span> from yesterday
+        <div className="mt-4">
+          <div className="text-2xl font-bold text-foreground">
+            {stats.totalPageViews.toLocaleString()}
+          </div>
+          <p className="text-sm text-muted-foreground">Page Views</p>
         </div>
       </div>
 
+      {/* Total Clicks */}
       <div className="stat-card">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Avg. Duration</p>
-            <p className="text-3xl font-bold text-green-500">{stats.averageDuration}</p>
+          <div className="w-12 h-12 bg-purple-500/10 rounded-full flex items-center justify-center">
+            <MousePointer className="w-6 h-6 text-purple-500" />
           </div>
-          <div className="h-12 w-12 bg-green-500/10 rounded-full flex items-center justify-center">
-            <Clock className="h-6 w-6 text-green-500" />
+          <div className="text-sm text-muted-foreground">
+            Click events
           </div>
         </div>
-        <div className="mt-4 text-xs text-muted-foreground">
-          <span className="text-green-500">+15s</span> improvement this week
+        <div className="mt-4">
+          <div className="text-2xl font-bold text-foreground">
+            {stats.totalClicks.toLocaleString()}
+          </div>
+          <p className="text-sm text-muted-foreground">Total Clicks</p>
         </div>
       </div>
 
+      {/* Average Duration */}
       <div className="stat-card">
         <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-muted-foreground">Active Now</p>
-            <p className="text-3xl font-bold text-purple-500">{stats.activeNow}</p>
+          <div className="w-12 h-12 bg-orange-500/10 rounded-full flex items-center justify-center">
+            <Clock className="w-6 h-6 text-orange-500" />
           </div>
-          <div className="h-12 w-12 bg-purple-500/10 rounded-full flex items-center justify-center">
-            <div className="relative">
-              <Eye className="h-6 w-6 text-purple-500" />
-              <div className="absolute -top-1 -right-1 h-3 w-3 bg-green-500 border-2 border-background rounded-full animate-pulse"></div>
-            </div>
+          <div className="text-sm text-muted-foreground">
+            Per session
           </div>
         </div>
-        <div className="mt-4 text-xs text-muted-foreground">
-          <span className="text-purple-500">You</span> are currently active
+        <div className="mt-4">
+          <div className="text-2xl font-bold text-foreground">
+            {formatDuration(stats.averageDuration)}
+          </div>
+          <p className="text-sm text-muted-foreground">Avg. Duration</p>
         </div>
       </div>
     </div>
